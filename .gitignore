@@ -1,7 +1,2 @@
 .DS_Store
 .idea/
-
-# product-cycle runtime state: approval tokens minted from the user's own
-# turn, single-use and consumed by state-gate.sh on the transition they
-# authorize. Local to a working copy; never committed.
-.product-cycle/

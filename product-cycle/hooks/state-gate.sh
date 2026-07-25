@@ -1,21 +1,38 @@
 #!/usr/bin/env bash
 # PreToolUse hook (Write|Edit|NotebookEdit|Bash): enforces product-cycle's
-# state machine (docs/specs/state-machine.md) against the RESOLVED TARGET
-# PATH being written, never against which tool performs the write — a
-# write made through `echo ... > file`, `tee`, or `sed -i` is judged the
-# same as a Write/Edit tool call that lands on the same path.
+# state machine against the RESOLVED TARGET PATH being written, never
+# against which tool performs the write or a literal filename appearing in
+# a command string — a write made through `echo ... > file`, `tee`, or
+# `sed -i` is judged the same as a Write/Edit tool call landing on the same
+# path.
 #
-# Unlike coding-agent-rulebook/warrant and qa-agent-rulebook/signoff, this
-# gate does NOT fail open on malformed input. Anything this hook cannot
-# parse or resolve is a DENY, never an allow — see docs/specs/state-machine.md
-# "Fail-closed" for the reasoning.
+# This gate answers exactly two questions:
+#   1. Does this write reach product/state.md (by resolved target path)?
+#      Everything else is allowed through without comment.
+#   2. If it reaches product/state.md: is the resulting `stage` transition
+#      present as a row in transition-rules.md? Present -> allow.
+#      Absent -> deny.
 #
-# Enforced rules:
-#   1. hypothesis-registered -> measuring is refused unless metric,
-#      threshold, and decision_rule are all non-empty in the file AND a
-#      matching approval token (minted by capture-approval.sh from the
-#      user's own turn) is present.
-#   2. While status is measuring, edits to the threshold field are refused.
+# It does NOT consult approval tokens or any token directory — that model
+# was removed; see docs/reports/2026-07-26-hunt-conversational-state-machine.md.
+#
+# Two denial reasons are kept textually distinct, on purpose:
+#   - "the transition rules could not be loaded" (transition-rules.md or
+#     product/state.md itself could not be read/parsed, or the hook input
+#     was malformed)
+#   - "this transition is not in the table" (both loaded fine; the specific
+#     from -> to pair just isn't a listed row)
+#
+# Fail-closed: anything this hook cannot parse or resolve is a DENY, never
+# an allow. Malformed hook input is denied with the rules-could-not-be-loaded
+# message, never a silent exit 0.
+#
+# A Bash command whose write target cannot be determined statically (a
+# variable, expansion, command substitution, glob, `eval`, or a heredoc
+# into a computed name) is treated as reaching product/state.md ONLY when
+# it is write-shaped toward product/state.md's directory; otherwise it is
+# NOT globally denied — it is simply outside this gate's concern, same as
+# any other unrelated write.
 #
 # Kill switch: export PRODUCT_CYCLE_OFF=1
 set -uo pipefail
@@ -30,16 +47,19 @@ case "${PRODUCT_CYCLE_OFF:-}" in
   *) exit 0 ;;
 esac
 
-command -v python3 >/dev/null 2>&1 || deny "python3 is required to evaluate the state gate and is not on PATH; refusing rather than allowing an unverified write."
+command -v python3 >/dev/null 2>&1 || deny "the transition rules could not be loaded — python3 is required to evaluate the gate and is not on PATH."
 
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
-[ -d "$root" ] || deny "cannot resolve the project root (CLAUDE_PROJECT_DIR unset and cwd is not a directory)."
-root="$(cd "$root" 2>/dev/null && pwd -P)" || deny "cannot resolve the project root to a real path."
+[ -d "$root" ] || deny "the transition rules could not be loaded — cannot resolve the project root (CLAUDE_PROJECT_DIR unset and cwd is not a directory)."
+root="$(cd "$root" 2>/dev/null && pwd -P)" || deny "the transition rules could not be loaded — cannot resolve the project root to a real path."
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd -P)" || deny "the transition rules could not be loaded — cannot resolve this hook's own directory."
+rules_path="$script_dir/transition-rules.md"
 
 payload="$(cat 2>/dev/null)"
-[ -n "$payload" ] || deny "empty tool-use payload on stdin; cannot evaluate the state gate."
+[ -n "$payload" ] || deny "the transition rules could not be loaded — empty tool-use payload on stdin; cannot evaluate the state gate."
 
-PRODUCT_ROOT="$root" PRODUCT_PAYLOAD="$payload" python3 <<'PY'
+PRODUCT_ROOT="$root" PRODUCT_PAYLOAD="$payload" PRODUCT_RULES_PATH="$rules_path" python3 <<'PY'
 import json
 import os
 import posixpath
@@ -54,269 +74,228 @@ def allow():
     sys.exit(0)
 
 root = os.environ["PRODUCT_ROOT"]
+rules_path = os.environ["PRODUCT_RULES_PATH"]
 raw = os.environ.get("PRODUCT_PAYLOAD", "")
+
+# --- malformed input: always denied with the rules-could-not-be-loaded ---
 try:
     event = json.loads(raw)
 except ValueError:
-    deny("the tool-use payload is not valid JSON.")
+    deny("the transition rules could not be loaded — the tool-use payload is not valid JSON.")
 if not isinstance(event, dict):
-    deny("the tool-use payload is not a JSON object.")
+    deny("the transition rules could not be loaded — the tool-use payload is not a JSON object.")
 
 tool = event.get("tool_name")
 tool_input = event.get("tool_input")
 if not isinstance(tool, str) or not tool:
-    deny("payload has no tool_name.")
+    deny("the transition rules could not be loaded — payload has no tool_name.")
 if not isinstance(tool_input, dict):
-    deny("payload has no tool_input object.")
+    deny("the transition rules could not be loaded — payload has no tool_input object.")
 
-FRONTMATTER_RE = re.compile(r'^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?', re.M | re.S)
-STATUS_RE = re.compile(r'^status:\s*(.*?)\s*(?:#.*)?$', re.M)
-METRIC_RE = re.compile(r'^metric:\s*(.*?)\s*(?:#.*)?$', re.M)
-THRESHOLD_RE = re.compile(r'^threshold:\s*(.*?)\s*(?:#.*)?$', re.M)
-RULE_RE = re.compile(r'^decision_rule:\s*(.*?)\s*(?:#.*)?$', re.M)
+STATE_REL = "product/state.md"
+STAGE_RE = re.compile(r'^stage:\s*(.*?)\s*$', re.M)
 
-def parse(text):
-    m = FRONTMATTER_RE.match(text or "")
-    if not m:
-        return {"status": "", "metric": "", "threshold": "", "decision_rule": ""}
-    block = m.group(1)
-    def get(rx):
-        mm = rx.search(block)
-        return mm.group(1).strip() if mm else ""
-    return {
-        "status": get(STATUS_RE),
-        "metric": get(METRIC_RE),
-        "threshold": get(THRESHOLD_RE),
-        "decision_rule": get(RULE_RE),
-    }
+def parse_stage(text):
+    """Return (stage_or_None, error_or_None)."""
+    matches = STAGE_RE.findall(text or "")
+    if len(matches) == 0:
+        return None, "no `stage:` field"
+    if len(matches) > 1:
+        return None, "%d `stage:` fields (must be exactly one)" % len(matches)
+    val = matches[0].strip()
+    if not val:
+        return None, "`stage:` field is empty"
+    return val, None
+
+def parse_rules(text):
+    rows = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cols = [c.strip() for c in line.strip("|").split("|")]
+        if len(cols) != 4:
+            continue
+        frm, to, actor, precond = cols
+        if frm.lower() == "from" and to.lower() == "to":
+            continue
+        if re.fullmatch(r'[-: ]+', frm or "-"):
+            continue
+        if not frm or not to:
+            continue
+        rows.append((frm, to))
+    return rows
 
 # --- resolve which real filesystem path this tool call targets ----------
-# A candidate token names a target only if it is a PLAIN LITERAL path: no
-# shell variable/parameter expansion ($...), no command substitution
-# ($(...) or backtick), no glob (* ? [ ]), no tilde/brace expansion, and no
-# quoting that could hide any of the above. Anything else is, by contract,
-# an unresolvable target and must DENY rather than fall through to allow.
 LITERAL_TOKEN_RE = re.compile(r'^[A-Za-z0-9_./\-]+$')
 
 def literal_target_or_none(raw_token):
-    """Return a safe literal path string, or None if raw_token is not
-    provably a plain literal (caller must then deny, never allow)."""
     tok = raw_token
     if len(tok) >= 2 and tok[0] == "'" and tok[-1] == "'":
-        # Single-quoted: the shell performs no expansion inside, so the
-        # quoted content itself is genuinely literal.
         inner = tok[1:-1]
         return inner if LITERAL_TOKEN_RE.match(inner) else None
-    # Unquoted (or double-quoted, which still expands $ and `): only a bare
-    # literal made of ordinary path characters is safe.
     if LITERAL_TOKEN_RE.match(tok):
         return tok
     return None
 
-# Operators whose target this gate must be able to name. Each regex's last
-# capture group is the token treated as the candidate target. This is a
-# best-effort static scan of the command text only — no eval, no execution.
+def looks_state_shaped(token):
+    """Heuristic: does this unresolvable token/text look like it targets
+    product/state.md (or product/'s directory), even though it cannot be
+    resolved to a concrete literal path? Used ONLY to decide whether an
+    unresolvable Bash write reaches the state file — never to deny
+    globally for targets that plainly aren't state-shaped."""
+    t = token.lower()
+    return "state.md" in t or re.search(r'(^|/)product(/|$)', t) is not None
+
 BASH_WRITE_OPS = [
-    re.compile(r'>{1,2}\s*([^\s;&|<>]+)'),                                   # > / >>
-    re.compile(r'\btee\b(?:\s+-a)?\s+([^\s;&|<>]+)'),                         # tee [-a] target
-    re.compile(r'\b(?:sed|perl|ruby)\b[^|;&\n]*\s-i\b[A-Za-z0-9_.\-]*\s+([^\s;&|<>]+)'),  # in-place edit
-    re.compile(r'\bcp\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),                 # cp ... dest
-    re.compile(r'\bmv\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),                 # mv ... dest
-    re.compile(r'\bdd\b[^|;&\n]*\bof=([^\s;&|<>]+)'),                        # dd of=target
-    re.compile(r'\binstall\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),           # install ... dest
+    re.compile(r'>{1,2}\s*([^\s;&|<>]+)'),
+    re.compile(r'\btee\b(?:\s+-a)?\s+([^\s;&|<>]+)'),
+    re.compile(r'\b(?:sed|perl|ruby)\b[^|;&\n]*\s-i\b[A-Za-z0-9_.\-]*\s+([^\s;&|<>]+)'),
+    re.compile(r'\bcp\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),
+    re.compile(r'\bmv\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),
+    re.compile(r'\bdd\b[^|;&\n]*\bof=([^\s;&|<>]+)'),
+    re.compile(r'\binstall\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),
 ]
 
-target_rel = None   # path relative to root, product-cycle's concern only
-target_kind = None  # "write_tool" | "bash" (bash targets can't be content-computed)
+real_root = posixpath.normpath(os.path.realpath(root).replace("\\", "/"))
+state_abs_target = posixpath.normpath(posixpath.join(real_root, STATE_REL))
+
+def resolves_to_state_file(literal_path):
+    norm = literal_path.replace("\\", "/")
+    absolute = posixpath.normpath(norm if posixpath.isabs(norm) else posixpath.join(root, norm))
+    resolved = posixpath.normpath(os.path.realpath(absolute).replace("\\", "/"))
+    return resolved == state_abs_target, resolved
+
+reaches_state = False
+unresolved_bash = False  # reaches state file via an unresolvable Bash target
 
 if tool in ("Write", "Edit", "NotebookEdit"):
     path = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(path, str) or not path:
-        deny("%s call has no usable file_path/notebook_path." % tool)
-    norm = path.replace("\\", "/")
-    absolute = posixpath.normpath(norm if posixpath.isabs(norm) else posixpath.join(root, norm))
-    real_root = posixpath.normpath(os.path.realpath(root).replace("\\", "/"))
-    resolved = posixpath.normpath(os.path.realpath(absolute).replace("\\", "/"))
-    if resolved != real_root and not resolved.startswith(real_root + "/"):
-        # Outside the repo entirely (or a symlink escaping it) — not this
-        # gate's concern; the repo-scope question belongs to another gate.
+        deny("the transition rules could not be loaded — %s call has no usable file_path/notebook_path." % tool)
+    is_state, resolved = resolves_to_state_file(path)
+    if not is_state:
         allow()
-    target_rel = resolved[len(real_root) + 1:]
-    target_kind = "write_tool"
+    reaches_state = True
+
 elif tool == "Bash":
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
-        deny("Bash call has no usable command string.")
+        deny("the transition rules could not be loaded — Bash call has no usable command string.")
 
-    # `eval` (and any command built through it) makes the actual write
-    # target undiscoverable by static inspection of this string — the real
-    # target could be anything the evaluated text constructs at runtime.
-    # Fail closed rather than trying to reason about what it might do.
     if re.search(r'(?:^|[\s;&|(])eval\b', command):
-        deny(
-            "the Bash command contains `eval`, whose write target cannot be determined "
-            "statically; refusing rather than allowing an unresolvable target."
-        )
+        if looks_state_shaped(command):
+            reaches_state = True
+            unresolved_bash = True
+        else:
+            allow()
+    else:
+        found_op = False
+        for op_re in BASH_WRITE_OPS:
+            for m in op_re.finditer(command):
+                found_op = True
+                raw_token = m.group(1)
+                cand = literal_target_or_none(raw_token)
+                if cand is None:
+                    if looks_state_shaped(raw_token) or looks_state_shaped(command):
+                        reaches_state = True
+                        unresolved_bash = True
+                    # else: not write-shaped toward product/state.md's
+                    # directory — do not deny globally; keep scanning other
+                    # ops in the same command line.
+                    continue
+                is_state, resolved = resolves_to_state_file(cand)
+                if is_state:
+                    reaches_state = True
 
-    found_op = False
-    for op_re in BASH_WRITE_OPS:
-        for m in op_re.finditer(command):
-            found_op = True
-            raw_token = m.group(1)
-            cand = literal_target_or_none(raw_token)
-            if cand is None:
-                deny(
-                    "the Bash command's write target (`%s`) is not a plain literal path — it may "
-                    "involve a variable, command substitution, glob, or other indirection — and "
-                    "this gate cannot resolve it statically; refusing rather than allowing an "
-                    "unresolvable target." % raw_token
-                )
-            norm = cand.replace("\\", "/")
-            absolute = posixpath.normpath(norm if posixpath.isabs(norm) else posixpath.join(root, norm))
-            real_root = posixpath.normpath(os.path.realpath(root).replace("\\", "/"))
-            resolved = posixpath.normpath(os.path.realpath(absolute).replace("\\", "/"))
-            if resolved == real_root or resolved.startswith(real_root + "/"):
-                # Multiple write ops in one command line: once any resolves
-                # inside the repo, that is the target we must gate on.
-                target_rel = resolved[len(real_root) + 1:]
-                target_kind = "bash"
-
-    if not found_op:
-        # No redirection/tee/in-place-edit/cp/mv/dd/install operator was
-        # found in the command text at all — this Bash call has no
-        # detectable write target, so it is outside this gate's concern.
-        allow()
-
-    if target_rel is None:
-        # A write operator was present but its resolved literal target(s)
-        # all fell outside the repo — not this gate's concern.
-        allow()
+        if not found_op:
+            allow()
+        if not reaches_state:
+            allow()
 else:
-    # Unknown tool this hook was not registered for defensively; nothing to
-    # evaluate.
     allow()
 
-# Only docs/proposals/*.md files carry product-cycle state.
-parts = target_rel.split("/")
-if len(parts) != 3 or parts[0] != "docs" or parts[1] != "proposals" or not parts[2].endswith(".md") or parts[2] == "README.md":
+if not reaches_state:
     allow()
 
-abs_path = os.path.join(root, target_rel)
+if unresolved_bash:
+    deny(
+        "the transition rules could not be loaded — a Bash command's write target toward %s "
+        "cannot be determined statically (variable/expansion/substitution/glob/eval/computed "
+        "name), so the resulting `stage` transition cannot be verified; use Write or Edit instead." % STATE_REL
+    )
+
+# --- load transition-rules.md -------------------------------------------
+try:
+    with open(rules_path, encoding="utf-8-sig") as fh:
+        rules_text = fh.read(1 << 20)
+except OSError as exc:
+    deny("the transition rules could not be loaded — transition-rules.md missing or unreadable at %s (%s)." % (rules_path, exc))
+
+if not rules_text.strip():
+    deny("the transition rules could not be loaded — transition-rules.md at %s is empty." % rules_path)
+
+rows = parse_rules(rules_text)
+if not rows:
+    deny("the transition rules could not be loaded — transition-rules.md at %s has no parseable rows." % rules_path)
+
+# --- read current on-disk stage ------------------------------------------
+abs_state_path = os.path.join(root, STATE_REL)
 old_text = ""
-if os.path.exists(abs_path):
+if os.path.exists(abs_state_path):
     try:
-        with open(abs_path, encoding="utf-8-sig") as fh:
+        with open(abs_state_path, encoding="utf-8-sig") as fh:
             old_text = fh.read(1 << 20)
-    except OSError:
-        deny("cannot read the current contents of %s to evaluate the transition." % target_rel)
+    except OSError as exc:
+        deny("the transition rules could not be loaded — cannot read current %s (%s)." % (STATE_REL, exc))
 
-old = parse(old_text)
+old_stage, old_err = parse_stage(old_text)
+if old_text.strip() and old_err:
+    deny("the transition rules could not be loaded — %s: %s." % (STATE_REL, old_err))
+if old_stage is None:
+    old_stage = ""  # file does not yet exist / has no content: no prior stage
 
-if target_kind == "bash":
-    # A Bash-driven write to a state file's content cannot be computed by
-    # this hook without executing the command — and this gate never
-    # verifies-after-the-fact. If the file is anywhere in a state the
-    # rules below govern, refuse outright; edits to the carrying file must
-    # go through Write/Edit so the resulting content can be checked before
-    # it lands.
-    if old["status"] in ("hypothesis-registered", "measuring"):
-        deny(
-            "%s is in status `%s`; edits to it while gated must be made with the Write or Edit "
-            "tool (not a shell redirect/tee/in-place edit) so this gate can verify the resulting "
-            "content before it lands." % (target_rel, old["status"])
-        )
-    allow()
-
-# target_kind == "write_tool": compute the resulting content.
+# --- compute resulting content -------------------------------------------
 if tool == "NotebookEdit":
-    # Not a markdown frontmatter file in any real use of this repo; nothing
-    # to parse reliably. Refuse rather than silently accept an unverifiable
-    # change to what is nominally a state file path.
-    deny("%s is a NotebookEdit target under docs/proposals/; this gate cannot verify notebook cell edits against frontmatter, so it refuses." % target_rel)
+    deny("the transition rules could not be loaded — %s is a NotebookEdit target; this gate cannot verify notebook cell edits against frontmatter." % STATE_REL)
 
 if tool == "Write":
     new_text = tool_input.get("content")
     if not isinstance(new_text, str):
-        deny("Write call on %s has no string content." % target_rel)
+        deny("the transition rules could not be loaded — Write call on %s has no string content." % STATE_REL)
 elif tool == "Edit":
     old_string = tool_input.get("old_string")
     new_string = tool_input.get("new_string")
     if not isinstance(old_string, str) or not isinstance(new_string, str):
-        deny("Edit call on %s is missing old_string/new_string." % target_rel)
+        deny("the transition rules could not be loaded — Edit call on %s is missing old_string/new_string." % STATE_REL)
     if old_string == "":
-        # A brand-new file created via an empty old_string; treat new_string as the file.
         new_text = new_string
     else:
         if old_string not in old_text:
-            deny("Edit call's old_string was not found verbatim in %s; refusing rather than guessing the resulting content." % target_rel)
+            deny("the transition rules could not be loaded — Edit call's old_string was not found verbatim in %s." % STATE_REL)
         replace_all = tool_input.get("replace_all") is True
         if replace_all:
             new_text = old_text.replace(old_string, new_string)
         else:
             new_text = old_text.replace(old_string, new_string, 1)
 else:
-    deny("unrecognized tool %s targeting a state file." % tool)
+    deny("the transition rules could not be loaded — unrecognized tool %s targeting %s." % (tool, STATE_REL))
 
-new = parse(new_text)
+new_stage, new_err = parse_stage(new_text)
+if new_err:
+    deny("the transition rules could not be loaded — resulting %s would have %s." % (STATE_REL, new_err))
 
-# --- Rule: threshold is frozen once status is measuring -----------------
-if old["status"] == "measuring" and new["threshold"] != old["threshold"]:
-    deny(
-        "%s has status: measuring; the threshold field is frozen once measurement starts and this "
-        "write changes it (`%s` -> `%s`)." % (target_rel, old["threshold"], new["threshold"])
-    )
+if new_stage == old_stage:
+    # No stage transition is being made by this write; nothing to gate.
+    allow()
 
-# --- Rule: hypothesis-registered -> measuring is gated -------------------
-if old["status"] == "hypothesis-registered" and new["status"] == "measuring":
-    missing = [f for f in ("metric", "threshold", "decision_rule") if not new[f]]
-    if missing:
-        deny(
-            "%s: cannot enter status: measuring — missing field(s): %s. The metric, threshold, and "
-            "decision rule must all be registered first." % (target_rel, ", ".join(missing))
-        )
+if (old_stage, new_stage) in rows:
+    allow()
 
-    token_name = re.sub(r'[^A-Za-z0-9_.-]', '_', os.path.basename(target_rel)) + ".token"
-    tokens_dir = os.path.join(root, ".product-cycle", "tokens")
-    token_path = os.path.join(tokens_dir, token_name)
-
-    if not os.path.isfile(token_path):
-        deny(
-            "%s: cannot enter status: measuring — no approval token found at .product-cycle/tokens/%s. "
-            "Content is not consent: the metric/threshold/decision_rule fields being filled in does not "
-            "by itself authorize this transition. State the approval in your own turn first." % (target_rel, token_name)
-        )
-
-    try:
-        with open(token_path, encoding="utf-8-sig") as fh:
-            token_text = fh.read(1 << 16)
-    except OSError:
-        deny("%s: the approval token file exists but could not be read." % target_rel)
-
-    tok_file_m = re.search(r'^file:\s*(.*?)\s*$', token_text, re.M)
-    tok_trans_m = re.search(r'^transition:\s*(.*?)\s*$', token_text, re.M)
-    if not tok_file_m or not tok_trans_m:
-        deny("%s: the approval token file is malformed (missing file/transition fields)." % target_rel)
-
-    if tok_file_m.group(1).strip() != target_rel:
-        deny(
-            "%s: the approval token on disk is bound to a different file (`%s`); it does not "
-            "authorize this transition." % (target_rel, tok_file_m.group(1).strip())
-        )
-    if tok_trans_m.group(1).strip() != "hypothesis-registered -> measuring":
-        deny(
-            "%s: the approval token on disk is bound to a different transition (`%s`)." % (
-                target_rel, tok_trans_m.group(1).strip()
-            )
-        )
-
-    # Single-use: consume the token so a second write cannot ride on the
-    # same approval.
-    try:
-        os.remove(token_path)
-    except OSError:
-        pass
-
-allow()
+deny(
+    "this transition is not in the table — `%s -> %s` is not a listed row in transition-rules.md "
+    "for %s." % (old_stage or "(none)", new_stage, STATE_REL)
+)
 PY
 status=$?
 exit "$status"
