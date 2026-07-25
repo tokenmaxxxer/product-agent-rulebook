@@ -36,9 +36,22 @@ command -v python3 >/dev/null 2>&1 || fallback "python3 is not on PATH and is re
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd -P)" || fallback "cannot resolve this hook's own directory to find transition-rules.md."
 rules_path="$script_dir/transition-rules.md"
 
-root="${CLAUDE_PROJECT_DIR:-$PWD}"
-[ -d "$root" ] || fallback "cannot resolve the project root (CLAUDE_PROJECT_DIR unset and cwd is not a directory)."
-root="$(cd "$root" 2>/dev/null && pwd -P)" || fallback "cannot resolve the project root to a real path."
+# Root is discovered by walking UP from the hook's own on-disk location to
+# the nearest enclosing `.git`, never from the process cwd or
+# CLAUDE_PROJECT_DIR — this must resolve to the same state file that
+# state-gate.sh guards, regardless of invoking cwd.
+root=""
+dir="$script_dir"
+while :; do
+  if [ -e "$dir/.git" ]; then
+    root="$dir"
+    break
+  fi
+  parent="$(dirname "$dir")"
+  [ "$parent" = "$dir" ] && break
+  dir="$parent"
+done
+[ -n "$root" ] || fallback "no enclosing .git found by walking up from this hook's own directory ($script_dir)."
 state_path="$root/product/state.md"
 
 PRODUCT_RULES_PATH="$rules_path" PRODUCT_STATE_PATH="$state_path" python3 <<'PY'
