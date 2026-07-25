@@ -87,11 +87,24 @@ rows = parse_rows(rules_text)
 if not rows:
     fail("transition-rules.md at %s has no parseable `from | to | actor | precondition` rows." % rules_path)
 
+NONE_STATE = "(none)"
+known_states = set()
+for r in rows:
+    if r["from"] != NONE_STATE:
+        known_states.add(r["from"])
+    if r["to"] != NONE_STATE:
+        known_states.add(r["to"])
+
 # --- load product/state.md ------------------------------------------------
-# A missing state file is not an error: it is the synthetic bootstrap state
-# `(none)`, before this role has ever written product/state.md. The
-# rules-could-not-be-loaded fallback stays reserved for a state file that
-# exists but whose `stage` field is absent, duplicated, or unparseable.
+# "No state file" is derived from file existence alone, as a separate
+# boolean, NEVER by comparing the parsed value against the `(none)` string.
+# Only a genuinely absent state file yields the synthetic bootstrap state
+# `(none)`.
+#
+# If the state file exists, its value must be a member of known_states.
+# `(none)`, empty, missing, or out-of-set are all a broken input for the
+# injector exactly as for the gate: emit the existing failure block instead
+# of rendering the broken value as if it were the current state.
 if not os.path.exists(state_path):
     current_stage = "(none)"
 else:
@@ -109,6 +122,8 @@ else:
     current_stage = stage_matches[0].strip()
     if not current_stage:
         fail("product/state.md's `stage:` field is present but empty.")
+    if current_stage not in known_states:
+        fail("product/state.md's `stage:` value %r is not a known state." % current_stage)
 
 # --- emit the block --------------------------------------------------------
 applicable = [r for r in rows if r["from"] == current_stage]
