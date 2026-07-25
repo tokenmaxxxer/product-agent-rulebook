@@ -91,9 +91,40 @@ def parse(text):
     }
 
 # --- resolve which real filesystem path this tool call targets ----------
-BASH_TARGET_RE = re.compile(
-    r'(?:>{1,2}|\btee\b(?:\s+-a)?|\b(?:sed|perl|ruby)\b[^|;&]*\s-i\b[A-Za-z0-9_.\-]*)\s*([^\s;&|<>]+)'
-)
+# A candidate token names a target only if it is a PLAIN LITERAL path: no
+# shell variable/parameter expansion ($...), no command substitution
+# ($(...) or backtick), no glob (* ? [ ]), no tilde/brace expansion, and no
+# quoting that could hide any of the above. Anything else is, by contract,
+# an unresolvable target and must DENY rather than fall through to allow.
+LITERAL_TOKEN_RE = re.compile(r'^[A-Za-z0-9_./\-]+$')
+
+def literal_target_or_none(raw_token):
+    """Return a safe literal path string, or None if raw_token is not
+    provably a plain literal (caller must then deny, never allow)."""
+    tok = raw_token
+    if len(tok) >= 2 and tok[0] == "'" and tok[-1] == "'":
+        # Single-quoted: the shell performs no expansion inside, so the
+        # quoted content itself is genuinely literal.
+        inner = tok[1:-1]
+        return inner if LITERAL_TOKEN_RE.match(inner) else None
+    # Unquoted (or double-quoted, which still expands $ and `): only a bare
+    # literal made of ordinary path characters is safe.
+    if LITERAL_TOKEN_RE.match(tok):
+        return tok
+    return None
+
+# Operators whose target this gate must be able to name. Each regex's last
+# capture group is the token treated as the candidate target. This is a
+# best-effort static scan of the command text only — no eval, no execution.
+BASH_WRITE_OPS = [
+    re.compile(r'>{1,2}\s*([^\s;&|<>]+)'),                                   # > / >>
+    re.compile(r'\btee\b(?:\s+-a)?\s+([^\s;&|<>]+)'),                         # tee [-a] target
+    re.compile(r'\b(?:sed|perl|ruby)\b[^|;&\n]*\s-i\b[A-Za-z0-9_.\-]*\s+([^\s;&|<>]+)'),  # in-place edit
+    re.compile(r'\bcp\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),                 # cp ... dest
+    re.compile(r'\bmv\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),                 # mv ... dest
+    re.compile(r'\bdd\b[^|;&\n]*\bof=([^\s;&|<>]+)'),                        # dd of=target
+    re.compile(r'\binstall\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),           # install ... dest
+]
 
 target_rel = None   # path relative to root, product-cycle's concern only
 target_kind = None  # "write_tool" | "bash" (bash targets can't be content-computed)
@@ -116,20 +147,49 @@ elif tool == "Bash":
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         deny("Bash call has no usable command string.")
-    m = BASH_TARGET_RE.search(command)
-    if m:
-        cand = m.group(1).strip("'\"")
-        norm = cand.replace("\\", "/")
-        absolute = posixpath.normpath(norm if posixpath.isabs(norm) else posixpath.join(root, norm))
-        real_root = posixpath.normpath(os.path.realpath(root).replace("\\", "/"))
-        resolved = posixpath.normpath(os.path.realpath(absolute).replace("\\", "/"))
-        if resolved == real_root or resolved.startswith(real_root + "/"):
-            target_rel = resolved[len(real_root) + 1:]
-            target_kind = "bash"
+
+    # `eval` (and any command built through it) makes the actual write
+    # target undiscoverable by static inspection of this string — the real
+    # target could be anything the evaluated text constructs at runtime.
+    # Fail closed rather than trying to reason about what it might do.
+    if re.search(r'(?:^|[\s;&|(])eval\b', command):
+        deny(
+            "the Bash command contains `eval`, whose write target cannot be determined "
+            "statically; refusing rather than allowing an unresolvable target."
+        )
+
+    found_op = False
+    for op_re in BASH_WRITE_OPS:
+        for m in op_re.finditer(command):
+            found_op = True
+            raw_token = m.group(1)
+            cand = literal_target_or_none(raw_token)
+            if cand is None:
+                deny(
+                    "the Bash command's write target (`%s`) is not a plain literal path — it may "
+                    "involve a variable, command substitution, glob, or other indirection — and "
+                    "this gate cannot resolve it statically; refusing rather than allowing an "
+                    "unresolvable target." % raw_token
+                )
+            norm = cand.replace("\\", "/")
+            absolute = posixpath.normpath(norm if posixpath.isabs(norm) else posixpath.join(root, norm))
+            real_root = posixpath.normpath(os.path.realpath(root).replace("\\", "/"))
+            resolved = posixpath.normpath(os.path.realpath(absolute).replace("\\", "/"))
+            if resolved == real_root or resolved.startswith(real_root + "/"):
+                # Multiple write ops in one command line: once any resolves
+                # inside the repo, that is the target we must gate on.
+                target_rel = resolved[len(real_root) + 1:]
+                target_kind = "bash"
+
+    if not found_op:
+        # No redirection/tee/in-place-edit/cp/mv/dd/install operator was
+        # found in the command text at all — this Bash call has no
+        # detectable write target, so it is outside this gate's concern.
+        allow()
+
     if target_rel is None:
-        # No redirection/tee/in-place-edit target detected against a path
-        # inside the repo — this Bash call is not writing a file we can
-        # identify, so it is outside this gate's concern.
+        # A write operator was present but its resolved literal target(s)
+        # all fell outside the repo — not this gate's concern.
         allow()
 else:
     # Unknown tool this hook was not registered for defensively; nothing to
