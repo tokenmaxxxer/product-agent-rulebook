@@ -22,6 +22,7 @@ user-gated).
 | researching | hypothesis-registered | agent | agent has proposed a metric, threshold, and decision rule and written them into the spec file, with guardrail metrics also named (non-empty) per the `guardrail-metrics` skill |
 | hypothesis-registered | measuring | user | user has recorded a funding/betting decision (a bet, a stage-gate go, or an equivalent alignment/go call) approving the registered metric/threshold/decision-rule/guardrail package in this conversation (product interaction research, moments 2 and 3) |
 | hypothesis-registered | scoping | user | user has rejected the registered package, sending it back to gathering |
+| measuring | measuring | agent | a collected-data/progress field is being recorded while status: measuring; threshold is not among the changed fields (state-gate.sh's separate threshold-immutability check in measuring still applies and is not loosened by this row) |
 | measuring | decided | agent | the registered decision rule has been mechanically applied to the collected data — deliberately not `actor: user`, since pre-registration exists precisely so this step has no discretionary case |
 | decided | scoping | user | a HiPPO-style conflict between the recorded decision and a senior stakeholder's opinion escalates, and the broadened stakeholder group reopens evidence-gathering (product interaction research, moment 6) — the weakest-sourced row in this table; no terminal forcing rule exists in the research for an unresolved standoff |
 
