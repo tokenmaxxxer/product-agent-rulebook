@@ -288,10 +288,6 @@ new_stage, new_err = parse_stage(new_text)
 if new_err:
     deny("the transition rules could not be loaded — resulting %s would have %s." % (STATE_REL, new_err))
 
-if new_stage == old_stage:
-    # No stage transition is being made by this write; nothing to gate.
-    allow()
-
 if (old_stage, new_stage) in rows:
     allow()
 
