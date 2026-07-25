@@ -1,0 +1,11 @@
+{
+  "name": "product-agent-env",
+  "version": "0.1.0",
+  "description": "One-install product-role environment: pulls in product-cycle as a dependency. Contains no code of its own.",
+  "author": {
+    "name": "Jung Jiwon & Lee Jongkwan"
+  },
+  "dependencies": [
+    "product-cycle"
+  ]
+}
