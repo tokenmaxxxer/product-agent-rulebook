@@ -69,6 +69,32 @@ while :; do
 done
 [ -n "$root" ] || deny "the transition rules could not be loaded — no enclosing .git found by walking up from this hook's own directory ($script_dir)."
 
+# --- contract SHA pin check -----------------------------------------------
+# README.md's "Handoff protocol" section is an excerpt of
+# docs/specs/role-handoff-contract.md (root tokenmaxxxer repo), pinned at
+# the SHA below. This applies the contract's own staleness rule (section 4)
+# to the contract itself: if the contract has moved since the excerpt was
+# taken, this repo's own gate refuses to proceed until the excerpt is
+# re-taken and the pin updated. This check runs on every invocation of this
+# hook, ahead of and independent of the product/state.md transition check
+# below.
+#
+# Best-effort, not fail-closed like the rest of this script: if the
+# enclosing tokenmaxxxer checkout or its git history cannot be found (e.g.
+# this repo installed standalone, without the org-level docs/ checkout as
+# its parent directory), the pin cannot be evaluated and this check is
+# skipped rather than denying every write in an environment that never had
+# the contract to check against.
+PINNED_CONTRACT_SHA="2affe5db7dfb285abaa2860d3004edb3f97c9aec"
+CONTRACT_REL="docs/specs/role-handoff-contract.md"
+contract_root="$(dirname "$root")"
+if git -C "$contract_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+  current_contract_sha="$(git -C "$contract_root" log -1 --format=%H -- "$CONTRACT_REL" 2>/dev/null)"
+  if [ -n "$current_contract_sha" ] && [ "$current_contract_sha" != "$PINNED_CONTRACT_SHA" ]; then
+    deny "the contract pin is stale — README.md's Handoff protocol section excerpts $CONTRACT_REL at $PINNED_CONTRACT_SHA, but its current sha is $current_contract_sha. Re-excerpt product's rows and update the pin before proceeding."
+  fi
+fi
+
 payload="$(cat 2>/dev/null)"
 [ -n "$payload" ] || deny "the transition rules could not be loaded — empty tool-use payload on stdin; cannot evaluate the state gate."
 

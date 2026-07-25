@@ -42,6 +42,64 @@ alone is never read as consent. Once `measuring` starts, edits to the
 Full detail, including the fail-closed rule and the token format, is in
 `docs/specs/state-machine.md`.
 
+## Handoff protocol
+
+Excerpted from `docs/specs/role-handoff-contract.md` (root `tokenmaxxxer`
+repo) at `2affe5db7dfb285abaa2860d3004edb3f97c9aec` — product's rows only.
+`product-cycle/hooks/state-gate.sh` refuses to proceed when this pinned
+SHA no longer matches the contract's current SHA.
+
+### Accepts
+
+- **`feasibility-record`** — to react to a verdict on a prior hypothesis.
+
+Refuses: `build-proposal`, `qa-state`, `review-record`, `ops-state`.
+
+### Where upstream lives
+
+- `feasibility-record` is read from
+  `docs/reports/records/<subject>/feasibility.md` in the target repo.
+
+The user hands over only a pointer ("it's here"); this path is what lets
+`product` resolve that pointer on its own, without asking.
+
+### Produces
+
+- **`hypothesis`** at `docs/proposals/<date>-<slug>.md`. Required fields:
+  role status (`idle,scoping,researching,hypothesis-registered,measuring,decided`),
+  plus the common header (`kind`, `subject`, `produced_by`, `upstream`,
+  `handoff_status: provisional | final`). `product` owns the
+  `<date>-<slug>.md` filename form in `docs/proposals/`; `coding` owns
+  `<date>-build-<slug>.md` in the same directory. The two forms can never
+  collide on the same date, because coding's carries the `build-` tag and
+  product's structurally cannot.
+- **`one-pager`** at `product/one-pager.md`. Required fields (all
+  non-empty): Background/Context, Problem Statement, Candidate Hypotheses,
+  Known Risks, Goals/Success Metrics — plus the common header.
+- **`opportunity-tree`** at `product/opportunity-tree.md`. A continuous
+  interview log, no fixed state field — plus the common header.
+
+### Stops
+
+- **Upstream stale at role entry.** Before acting on a handed-over
+  `feasibility-record`, `product` compares the recorded `sha` in its
+  `upstream` entry against the current commit that touched that path. If
+  they differ, `product` stops before doing further work and asks the user
+  whether to proceed on the recorded version or re-confirm against the
+  current one — it does not decide this itself.
+- **A record already exists at a path `product` does not own.** If
+  `product`, in the course of its work, finds an existing record already
+  present under `docs/reports/records/` or at a `docs/proposals/` filename
+  it does not own (including a `<date>-build-<slug>.md` slot tagged as
+  coding's), it refuses to write there and reports the conflict — the
+  path, and whose territory it falls in — to the user. It never overwrites
+  or merges into it silently.
+- **Input carries `handoff_status: provisional`.** `product` may read a
+  provisional `feasibility-record` to plan or draft against, but must not
+  treat it as final input to an accept/refuse decision or as the baseline
+  recorded in its own `upstream` entry for the staleness check, until the
+  artifact's `handoff_status` reads `final`.
+
 ## Install
 
 ```
