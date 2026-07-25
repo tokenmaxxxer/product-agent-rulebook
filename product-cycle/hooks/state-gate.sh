@@ -1,27 +1,56 @@
 #!/usr/bin/env bash
 # PreToolUse hook (Write|Edit|NotebookEdit|Bash): enforces product-cycle's
-# state machine against the RESOLVED TARGET PATH being written, never
-# against which tool performs the write or a literal filename appearing in
-# a command string — a write made through `echo ... > file`, `tee`, or
-# `sed -i` is judged the same as a Write/Edit tool call landing on the same
-# path.
+# state machine, and (per docs/specs/role-handoff-contract.md v2) the
+# handoff contract's write-side rules, against the RESOLVED TARGET PATH
+# being written, never against which tool performs the write or a literal
+# filename appearing in a command string — a write made through
+# `echo ... > file`, `tee`, or `sed -i` is judged the same as a
+# Write/Edit tool call landing on the same path.
 #
-# This gate answers exactly two questions:
+# This gate answers up to four questions:
 #   1. Does this write reach product/state.md (by resolved target path)?
-#      Everything else is allowed through without comment.
-#   2. If it reaches product/state.md: is the resulting `stage` transition
-#      present as a row in transition-rules.md? Present -> allow.
-#      Absent -> deny.
+#      If so: is the resulting `stage` transition present as a row in
+#      transition-rules.md? Present -> allow. Absent -> deny.
+#   2. Does this write reach a path under product's four owned kinds
+#      (contract §11: hypothesis, product-record, one-pager,
+#      opportunity-tree) or a path structurally owned by another role
+#      (a `docs/proposals/<date>-build-<slug>.md` slot, or a
+#      `docs/reports/records/<subject>/<other-role>.md` record)? A write
+#      landing on a foreign-owned path is refused and reported as a
+#      conflict, never silently overwritten or merged — contract §11.
+#   3. If the write is a `product-record` (`docs/reports/records/<subject>/product.md`):
+#      does it carry a non-empty pointer to its governing `hypothesis`?
+#      This is the one DEPENDS-ON relationship contract §4 assigns
+#      product (`product` depends on `feasibility-record`... but the
+#      mechanically checkable case here is the `product-record`'s own
+#      pointer field back to the hypothesis it elaborates). Missing ->
+#      deny. Per contract §14, this check is intentionally shallow: it
+#      confirms the pointer field is present and non-empty, not that the
+#      dependency's substance is correct — kind is self-declared and
+#      unverified, and path ownership is a table, not a full gate, beyond
+#      what is checked here.
+#   4. Anything else is allowed through without comment.
+#
+# READ is broad by design: this gate has never parsed a record's `kind:`
+# field for read-refusal purposes (there is no kind-based read-refusal
+# logic anywhere in this file, and grepping this repo for `kind:` finds
+# no such logic to remove) — it was already READ-broad by omission before
+# the v2 contract, and v2 makes that the contract-required stance, not
+# merely an accident of what was never built.
 #
 # It does NOT consult approval tokens or any token directory — that model
 # was removed; see docs/reports/2026-07-26-hunt-conversational-state-machine.md.
 #
-# Two denial reasons are kept textually distinct, on purpose:
+# Denial reasons are kept textually distinct, on purpose:
 #   - "the transition rules could not be loaded" (transition-rules.md or
 #     product/state.md itself could not be read/parsed, or the hook input
 #     was malformed)
 #   - "this transition is not in the table" (both loaded fine; the specific
 #     from -> to pair just isn't a listed row)
+#   - "path ownership conflict" (a write reaches a path this repo's
+#     product role does not own, per contract §11)
+#   - "missing governing-hypothesis pointer" (a product-record write has
+#     no non-empty pointer back to its hypothesis, per contract §4)
 #
 # Fail-closed: anything this hook cannot parse or resolve is a DENY, never
 # an allow. Malformed hook input is denied with the rules-could-not-be-loaded
@@ -117,6 +146,68 @@ STAGE_RE = re.compile(r'^stage:\s*(.*?)\s*$', re.M)
 # pass-through allow: unknown input fails closed.
 RECOGNIZED_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
+# --- contract §2 kind: parsing (comment-tolerant) -------------------------
+# Contract §2 requires `kind` parsing to tolerate a trailing comment on the
+# same line (`kind: build-proposal  # re-scoped` must parse as
+# `build-proposal`); a regex anchored to end-of-line with no comment
+# tolerance is a gate defect, not a violation by the record's author. This
+# is intentionally NOT `r'^kind:\s*(\S+)\s*$'` — that form fails on a
+# trailing comment because `\S+` stops at the space but `$` then fails to
+# match the comment text. Strip an unquoted trailing `#...` comment first,
+# mirroring how YAML frontmatter parsers conventionally handle inline
+# comments, then take the remaining token.
+KIND_LINE_RE = re.compile(r'^kind:\s*(.*)$', re.M)
+
+def parse_kind(text):
+    """Return the self-declared `kind:` value from record text, or None if
+    absent/unparseable. Self-declared and unverified per contract §14 —
+    this function only extracts it, callers decide what to do with it."""
+    m = KIND_LINE_RE.search(text or "")
+    if not m:
+        return None
+    rest = m.group(1)
+    # Strip a trailing unquoted `#...` comment (and surrounding whitespace).
+    rest = re.split(r'\s+#', rest, maxsplit=1)[0].strip()
+    return rest or None
+
+# --- contract §11 owned-path classification --------------------------------
+# product's four owned kinds, plus recognition of paths structurally owned
+# by another role so a conflicting write can be refused-and-reported
+# rather than silently overwritten or merged (contract §11).
+PRODUCT_HYPOTHESIS_RE = re.compile(r'^docs/proposals/(\d{4}-\d{2}-\d{2})-(?!build-)([A-Za-z0-9][A-Za-z0-9\-]*)\.md$')
+FOREIGN_BUILD_PROPOSAL_RE = re.compile(r'^docs/proposals/(\d{4}-\d{2}-\d{2})-build-([A-Za-z0-9][A-Za-z0-9\-]*)\.md$')
+RECORDS_RE = re.compile(r'^docs/reports/records/([^/]+)/([A-Za-z0-9\-]+)\.md$')
+
+def classify_path(rel_path):
+    """Classify a repo-relative path against contract §11's ownership
+    table. Returns (category, subject_or_None) where category is one of:
+      "hypothesis", "product-record", "one-pager", "opportunity-tree"
+        -> a path product owns.
+      "foreign"
+        -> a path structurally owned by a different role (a
+           `<date>-build-<slug>.md` proposal, or a
+           `docs/reports/records/<subject>/<other>.md` record where
+           <other> is not "product").
+      None
+        -> outside this gate's owned-path/foreign-path concern entirely.
+    """
+    rel = rel_path.replace("\\", "/")
+    if rel == "product/one-pager.md":
+        return "one-pager", None
+    if rel == "product/opportunity-tree.md":
+        return "opportunity-tree", None
+    if FOREIGN_BUILD_PROPOSAL_RE.match(rel):
+        return "foreign", None
+    if PRODUCT_HYPOTHESIS_RE.match(rel):
+        return "hypothesis", None
+    m = RECORDS_RE.match(rel)
+    if m:
+        subject, record_name = m.group(1), m.group(2)
+        if record_name == "product":
+            return "product-record", subject
+        return "foreign", subject
+    return None, None
+
 def parse_stage(text):
     """Return (stage_or_None, error_or_None)."""
     matches = STAGE_RE.findall(text or "")
@@ -188,6 +279,74 @@ def resolves_to_state_file(literal_path):
     resolved = posixpath.normpath(os.path.realpath(absolute).replace("\\", "/"))
     return resolved == state_abs_target, resolved
 
+def repo_relative_or_none(literal_path):
+    """Resolve a literal path to a repo-relative posix path (for §11
+    owned-path classification), or None if it resolves outside root."""
+    norm = literal_path.replace("\\", "/")
+    absolute = posixpath.normpath(norm if posixpath.isabs(norm) else posixpath.join(root, norm))
+    resolved = posixpath.normpath(os.path.realpath(absolute).replace("\\", "/"))
+    if resolved == real_root or not resolved.startswith(real_root + "/"):
+        return None
+    return resolved[len(real_root) + 1:]
+
+CONTRACT_REL = "docs/specs/role-handoff-contract.md"
+
+def require_contract():
+    # The handoff contract holds only within this single repo. This gate
+    # resolves exactly one root (the git root resolved above, by walking
+    # up from this hook's own on-disk location) and checks for
+    # docs/specs/role-handoff-contract.md inside THAT root only — no
+    # parent/sibling-repo lookup, no SHA pin, no comparison to any other
+    # repo's git history. If the contract file is absent, this
+    # handoff-protocol action is refused with an honest message rather
+    # than silently passing. Runs ahead of BOTH the state.md
+    # stage-transition check and the §11 owned-path checks below, since
+    # both are handoff-protocol actions.
+    if not os.path.isfile(os.path.join(root, CONTRACT_REL)):
+        deny(
+            "this repo has no collaboration contract yet — %s was not found at %s. "
+            "Handoff-protocol actions cannot proceed until this repo carries its own contract."
+            % (CONTRACT_REL, root)
+        )
+
+def check_owned_path_write(rel_path, new_text):
+    """Enforce contract §11 (owned-path write refusal) and the
+    mechanically-checkable half of contract §4's DEPENDS-ON
+    (product-record must point at its governing hypothesis). Denies on
+    violation; returns normally (falls through to allow()) otherwise."""
+    category, subject = classify_path(rel_path)
+    if category is None:
+        return
+    require_contract()
+    if category == "foreign":
+        deny(
+            "path ownership conflict — %s falls in another role's owned space per "
+            "docs/specs/role-handoff-contract.md §11. product refuses to write there "
+            "rather than overwriting or merging into it silently; report this conflict "
+            "to the user." % rel_path
+        )
+    kind = parse_kind(new_text)
+    if kind is not None and kind != category:
+        deny(
+            "path ownership conflict — %s is product's `%s` slot per contract §11, but the "
+            "content self-declares `kind: %s`. Refusing rather than writing a mismatched "
+            "kind into an owned path." % (rel_path, category, kind)
+        )
+    if category == "product-record":
+        # Mechanically checkable half of contract §4's DEPENDS-ON: the
+        # product-record must carry a non-empty pointer back to the
+        # governing hypothesis it elaborates. This does NOT verify the
+        # pointer resolves to a real, correct hypothesis — per contract
+        # §14, kind is self-declared and unverified, and this check only
+        # confirms the field is present and non-empty.
+        m = re.search(r'^(?:governing_hypothesis|hypothesis):\s*(.+?)\s*$', new_text or "", re.M)
+        if not m or not m.group(1).strip():
+            deny(
+                "missing governing-hypothesis pointer — %s (a product-record) has no "
+                "non-empty `hypothesis:` (or `governing_hypothesis:`) field pointing at the "
+                "hypothesis it elaborates, per contract §4's DEPENDS-ON relationship." % rel_path
+            )
+
 reaches_state = False
 unresolved_bash = False  # reaches state file via an unresolvable Bash target
 
@@ -197,6 +356,20 @@ if tool in RECOGNIZED_WRITE_TOOLS:
         deny("the transition rules could not be loaded — %s call has no usable file_path/notebook_path." % tool)
     is_state, resolved = resolves_to_state_file(path)
     if not is_state:
+        rel = repo_relative_or_none(path)
+        if rel is not None and tool in ("Write", "Edit"):
+            # Compute resulting content for owned-path/kind/DEPENDS-ON
+            # checks. NotebookEdit and MultiEdit are out of scope for this
+            # check (MultiEdit's own state.md content-computation logic
+            # below is state.md-specific; owned-path record files are
+            # plain markdown, most commonly edited via Write/Edit).
+            if tool == "Write":
+                content = tool_input.get("content")
+                content = content if isinstance(content, str) else ""
+            else:  # Edit
+                new_string = tool_input.get("new_string")
+                content = new_string if isinstance(new_string, str) else ""
+            check_owned_path_write(rel, content)
         allow()
     reaches_state = True
 
@@ -244,22 +417,11 @@ else:
 if not reaches_state:
     allow()
 
-# --- repo-local handoff contract check -----------------------------------
-# The handoff contract holds only within this single repo. This gate
-# resolves exactly one root (the git root resolved above, by walking up
-# from this hook's own on-disk location) and checks for
-# docs/specs/role-handoff-contract.md inside THAT root only — no
-# parent/sibling-repo lookup, no SHA pin, no comparison to any other repo's
-# git history. If the contract file is absent, this handoff-protocol
-# action (a write reaching product/state.md) is refused with an honest
-# message rather than silently passing.
-CONTRACT_REL = "docs/specs/role-handoff-contract.md"
-if not os.path.isfile(os.path.join(root, CONTRACT_REL)):
-    deny(
-        "this repo has no collaboration contract yet — %s was not found at %s. "
-        "Handoff-protocol actions cannot proceed until this repo carries its own contract."
-        % (CONTRACT_REL, root)
-    )
+# --- repo-local handoff contract check (state.md path) -------------------
+# See require_contract() above for the full rationale; this is the same
+# check, re-pointed at the state.md stage-transition path (the owned-path
+# writes above already ran it via check_owned_path_write).
+require_contract()
 
 if unresolved_bash:
     deny(
