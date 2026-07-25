@@ -156,6 +156,81 @@ else
   fail "(f) malformed hook JSON was NOT denied with output (exit $code_f, out='$GATE_OUT')"
 fi
 
+# --- (g) existing state file with `stage: (none)` -> DENY, rules-could-not-be-loaded
+root_g="$work/g"
+rm -rf "$root_g"; mkdir -p "$root_g/product"
+cat > "$root_g/product/state.md" <<'EOF'
+---
+stage: (none)
+metric: 7-day activation rate
+threshold: >= 20%
+---
+EOF
+payload_g="$(json_write "$root_g" "idle")"
+run_gate "$root_g" "$payload_g"
+code_g=$?
+if [ "$code_g" -ne 0 ] && printf '%s' "$GATE_OUT" | grep -q "rules could not be loaded"; then
+  pass "(g) existing state file with stage: (none) is denied with rules-could-not-be-loaded"
+else
+  fail "(g) existing state file with stage: (none) was NOT denied properly (exit $code_g): $GATE_OUT"
+fi
+
+# --- (h) existing state file with empty stage value -> DENY likewise -----
+root_h="$work/h"
+rm -rf "$root_h"; mkdir -p "$root_h/product"
+cat > "$root_h/product/state.md" <<'EOF'
+---
+stage:
+metric: 7-day activation rate
+threshold: >= 20%
+---
+EOF
+payload_h="$(json_write "$root_h" "idle")"
+run_gate "$root_h" "$payload_h"
+code_h=$?
+if [ "$code_h" -ne 0 ] && printf '%s' "$GATE_OUT" | grep -q "rules could not be loaded"; then
+  pass "(h) existing state file with empty stage value is denied with rules-could-not-be-loaded"
+else
+  fail "(h) existing state file with empty stage value was NOT denied properly (exit $code_h): $GATE_OUT"
+fi
+
+# --- (i) existing state file with out-of-set stage value -> DENY likewise
+root_i="$work/i"
+setup_root "$root_i" "totally-made-up-stage"
+payload_i="$(json_write "$root_i" "idle")"
+run_gate "$root_i" "$payload_i"
+code_i=$?
+if [ "$code_i" -ne 0 ] && printf '%s' "$GATE_OUT" | grep -q "rules could not be loaded"; then
+  pass "(i) existing state file with out-of-set stage value is denied with rules-could-not-be-loaded"
+else
+  fail "(i) existing state file with out-of-set stage value was NOT denied properly (exit $code_i): $GATE_OUT"
+fi
+
+# --- (j) existing state file with valid value + trailing whitespace/CRLF -> treated as that valid state
+root_j="$work/j"
+rm -rf "$root_j"; mkdir -p "$root_j/product"
+printf -- '---\r\nstage: idle   \r\nmetric: 7-day activation rate\r\nthreshold: >= 20%%\r\n---\r\n' > "$root_j/product/state.md"
+payload_j="$(json_write "$root_j" "scoping")"
+run_gate "$root_j" "$payload_j"
+code_j=$?
+if [ "$code_j" -eq 0 ]; then
+  pass "(j) existing state file with trailing whitespace/CRLF on a valid value is treated as that valid state"
+else
+  fail "(j) existing state file with trailing whitespace/CRLF on a valid value was DENIED (exit $code_j): $GATE_OUT"
+fi
+
+# --- (k) state file genuinely absent -> (none) -> X bootstrap row still ALLOWED
+root_k="$work/k"
+rm -rf "$root_k"; mkdir -p "$root_k/product"
+payload_k="$(json_write "$root_k" "idle")"
+run_gate "$root_k" "$payload_k"
+code_k=$?
+if [ "$code_k" -eq 0 ]; then
+  pass "(k) genuinely absent state file: (none) -> idle bootstrap row is still allowed"
+else
+  fail "(k) genuinely absent state file: (none) -> idle bootstrap row was DENIED (exit $code_k): $GATE_OUT"
+fi
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]

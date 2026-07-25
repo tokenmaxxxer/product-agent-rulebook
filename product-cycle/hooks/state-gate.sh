@@ -239,14 +239,28 @@ rows = parse_rules(rules_text)
 if not rows:
     deny("the transition rules could not be loaded — transition-rules.md at %s has no parseable rows." % rules_path)
 
-# --- read current on-disk stage ------------------------------------------
-# A missing state file is not an error: it is the synthetic state `(none)`,
-# the bootstrap starting point before this role has ever written
-# product/state.md. Only a state file that exists but is unparseable is
-# the "rules could not be loaded" condition.
-abs_state_path = os.path.join(root, STATE_REL)
 NONE_STATE = "(none)"
-if not os.path.exists(abs_state_path):
+known_states = set()
+for frm, to in rows:
+    if frm != NONE_STATE:
+        known_states.add(frm)
+    if to != NONE_STATE:
+        known_states.add(to)
+
+# --- read current on-disk stage ------------------------------------------
+# "No state file" is derived from file existence alone, as a separate
+# boolean, NEVER by comparing a parsed value against the `(none)` string.
+# Only a genuinely absent state file yields the synthetic `(none)` old
+# state used for bootstrap-row matching.
+#
+# If the state file exists, its value must be a member of known_states.
+# `(none)` as the on-disk value, an empty value, a missing field, or any
+# value outside known_states are all the same case: the gate cannot
+# establish its own input, so it denies with the rules-could-not-be-loaded
+# message — never "transition not in the table".
+abs_state_path = os.path.join(root, STATE_REL)
+file_exists = os.path.exists(abs_state_path)
+if not file_exists:
     old_stage = NONE_STATE
 else:
     try:
@@ -257,6 +271,8 @@ else:
     old_stage, old_err = parse_stage(old_text)
     if old_err:
         deny("the transition rules could not be loaded — %s: %s." % (STATE_REL, old_err))
+    if old_stage not in known_states:
+        deny("the transition rules could not be loaded — %s's `stage:` value %r is not a known state." % (STATE_REL, old_stage))
 
 # --- compute resulting content -------------------------------------------
 if tool == "NotebookEdit":
