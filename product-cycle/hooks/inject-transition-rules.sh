@@ -88,20 +88,27 @@ if not rows:
     fail("transition-rules.md at %s has no parseable `from | to | actor | precondition` rows." % rules_path)
 
 # --- load product/state.md ------------------------------------------------
-try:
-    with open(state_path, encoding="utf-8-sig") as fh:
-        state_text = fh.read(1 << 20)
-except OSError as exc:
-    fail("product/state.md is missing or unreadable at %s (%s)." % (state_path, exc))
+# A missing state file is not an error: it is the synthetic bootstrap state
+# `(none)`, before this role has ever written product/state.md. The
+# rules-could-not-be-loaded fallback stays reserved for a state file that
+# exists but whose `stage` field is absent, duplicated, or unparseable.
+if not os.path.exists(state_path):
+    current_stage = "(none)"
+else:
+    try:
+        with open(state_path, encoding="utf-8-sig") as fh:
+            state_text = fh.read(1 << 20)
+    except OSError as exc:
+        fail("product/state.md is missing or unreadable at %s (%s)." % (state_path, exc))
 
-stage_matches = re.findall(r'^stage:\s*(.*?)\s*$', state_text, re.M)
-if len(stage_matches) == 0:
-    fail("product/state.md has no `stage:` field.")
-if len(stage_matches) > 1:
-    fail("product/state.md has %d `stage:` fields; it must have exactly one." % len(stage_matches))
-current_stage = stage_matches[0].strip()
-if not current_stage:
-    fail("product/state.md's `stage:` field is present but empty.")
+    stage_matches = re.findall(r'^stage:\s*(.*?)\s*$', state_text, re.M)
+    if len(stage_matches) == 0:
+        fail("product/state.md has no `stage:` field.")
+    if len(stage_matches) > 1:
+        fail("product/state.md has %d `stage:` fields; it must have exactly one." % len(stage_matches))
+    current_stage = stage_matches[0].strip()
+    if not current_stage:
+        fail("product/state.md's `stage:` field is present but empty.")
 
 # --- emit the block --------------------------------------------------------
 applicable = [r for r in rows if r["from"] == current_stage]

@@ -13,6 +13,7 @@ user-gated).
 
 | from | to | actor | precondition |
 |---|---|---|---|
+| (none) | idle | agent | product/state.md does not yet exist; the agent creates it with stage `idle` as the initial state |
 | idle | scoping | user | user has handed the role an idea to work on |
 | scoping | researching | agent | agent has begun gathering evidence for the idea |
 | researching | hypothesis-registered | agent | agent has proposed a metric, threshold, and decision rule and written them into the spec file |

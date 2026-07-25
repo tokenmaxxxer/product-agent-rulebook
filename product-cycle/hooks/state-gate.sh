@@ -240,20 +240,23 @@ if not rows:
     deny("the transition rules could not be loaded — transition-rules.md at %s has no parseable rows." % rules_path)
 
 # --- read current on-disk stage ------------------------------------------
+# A missing state file is not an error: it is the synthetic state `(none)`,
+# the bootstrap starting point before this role has ever written
+# product/state.md. Only a state file that exists but is unparseable is
+# the "rules could not be loaded" condition.
 abs_state_path = os.path.join(root, STATE_REL)
-old_text = ""
-if os.path.exists(abs_state_path):
+NONE_STATE = "(none)"
+if not os.path.exists(abs_state_path):
+    old_stage = NONE_STATE
+else:
     try:
         with open(abs_state_path, encoding="utf-8-sig") as fh:
             old_text = fh.read(1 << 20)
     except OSError as exc:
         deny("the transition rules could not be loaded — cannot read current %s (%s)." % (STATE_REL, exc))
-
-old_stage, old_err = parse_stage(old_text)
-if old_text.strip() and old_err:
-    deny("the transition rules could not be loaded — %s: %s." % (STATE_REL, old_err))
-if old_stage is None:
-    old_stage = ""  # file does not yet exist / has no content: no prior stage
+    old_stage, old_err = parse_stage(old_text)
+    if old_err:
+        deny("the transition rules could not be loaded — %s: %s." % (STATE_REL, old_err))
 
 # --- compute resulting content -------------------------------------------
 if tool == "NotebookEdit":
@@ -294,7 +297,7 @@ if (old_stage, new_stage) in rows:
 
 deny(
     "this transition is not in the table — `%s -> %s` is not a listed row in transition-rules.md "
-    "for %s." % (old_stage or "(none)", new_stage, STATE_REL)
+    "for %s." % (old_stage, new_stage, STATE_REL)
 )
 PY
 status=$?
