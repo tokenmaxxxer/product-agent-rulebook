@@ -44,10 +44,15 @@ Full detail, including the fail-closed rule and the token format, is in
 
 ## Handoff protocol
 
-Excerpted from `docs/specs/role-handoff-contract.md` (root `tokenmaxxxer`
-repo) at `2affe5db7dfb285abaa2860d3004edb3f97c9aec` — product's rows only.
-`product-cycle/hooks/state-gate.sh` refuses to proceed when this pinned
-SHA no longer matches the contract's current SHA.
+The authoritative contract is the work repo's own
+`docs/specs/role-handoff-contract.md` — the file inside the git root this
+session is pointed at, not any file outside that repo. This section
+describes only how the product role behaves against whatever contract the
+work repo carries; it excerpts product's rows for convenience, but the
+work repo's copy is what governs. `product-cycle/hooks/state-gate.sh`
+refuses handoff-protocol actions when that repo has no
+`docs/specs/role-handoff-contract.md` yet, rather than proceeding
+silently.
 
 ### Accepts
 
