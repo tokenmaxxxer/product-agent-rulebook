@@ -49,12 +49,25 @@ esac
 
 command -v python3 >/dev/null 2>&1 || deny "the transition rules could not be loaded — python3 is required to evaluate the gate and is not on PATH."
 
-root="${CLAUDE_PROJECT_DIR:-$PWD}"
-[ -d "$root" ] || deny "the transition rules could not be loaded — cannot resolve the project root (CLAUDE_PROJECT_DIR unset and cwd is not a directory)."
-root="$(cd "$root" 2>/dev/null && pwd -P)" || deny "the transition rules could not be loaded — cannot resolve the project root to a real path."
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd -P)" || deny "the transition rules could not be loaded — cannot resolve this hook's own directory."
 rules_path="$script_dir/transition-rules.md"
+
+# Root is discovered by walking UP from the hook's own on-disk location to
+# the nearest enclosing `.git`, never from the process cwd or
+# CLAUDE_PROJECT_DIR — a hook invoked with a cwd outside the repo must still
+# resolve to, and guard, this repo's own state file.
+root=""
+dir="$script_dir"
+while :; do
+  if [ -e "$dir/.git" ]; then
+    root="$dir"
+    break
+  fi
+  parent="$(dirname "$dir")"
+  [ "$parent" = "$dir" ] && break
+  dir="$parent"
+done
+[ -n "$root" ] || deny "the transition rules could not be loaded — no enclosing .git found by walking up from this hook's own directory ($script_dir)."
 
 payload="$(cat 2>/dev/null)"
 [ -n "$payload" ] || deny "the transition rules could not be loaded — empty tool-use payload on stdin; cannot evaluate the state gate."
@@ -94,6 +107,15 @@ if not isinstance(tool_input, dict):
 
 STATE_REL = "product/state.md"
 STAGE_RE = re.compile(r'^stage:\s*(.*?)\s*$', re.M)
+
+# Single source of truth for which tools this gate recognizes as capable of
+# writing product/state.md — used by BOTH the "does this reach the state
+# file" dispatch and the "compute resulting content" dispatch below, so the
+# two cannot drift apart the way Edit/MultiEdit did. A tool name outside this
+# set that nonetheless reaches this script (e.g. because hooks.json's
+# matcher and this list disagree, or a fake tool name) is a DENY, not a
+# pass-through allow: unknown input fails closed.
+RECOGNIZED_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
 def parse_stage(text):
     """Return (stage_or_None, error_or_None)."""
@@ -169,7 +191,7 @@ def resolves_to_state_file(literal_path):
 reaches_state = False
 unresolved_bash = False  # reaches state file via an unresolvable Bash target
 
-if tool in ("Write", "Edit", "NotebookEdit"):
+if tool in RECOGNIZED_WRITE_TOOLS:
     path = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not isinstance(path, str) or not path:
         deny("the transition rules could not be loaded — %s call has no usable file_path/notebook_path." % tool)
@@ -213,7 +235,11 @@ elif tool == "Bash":
         if not reaches_state:
             allow()
 else:
-    allow()
+    deny(
+        "an unrecognized tool (%r) reached this gate. This gate's recognized-write-tool "
+        "list is %r; a tool name outside that set is treated as a denial, not a pass — "
+        "unknown input fails closed rather than being assumed to be a read." % (tool, RECOGNIZED_WRITE_TOOLS)
+    )
 
 if not reaches_state:
     allow()
@@ -297,6 +323,29 @@ elif tool == "Edit":
             new_text = old_text.replace(old_string, new_string)
         else:
             new_text = old_text.replace(old_string, new_string, 1)
+elif tool == "MultiEdit":
+    edits = tool_input.get("edits")
+    if not isinstance(edits, list) or not edits:
+        deny("the transition rules could not be loaded — MultiEdit call on %s has no usable edits list." % STATE_REL)
+    text = old_text
+    for e in edits:
+        if not isinstance(e, dict):
+            deny("the transition rules could not be loaded — MultiEdit call on %s has a non-object edit entry." % STATE_REL)
+        old_string = e.get("old_string")
+        new_string = e.get("new_string")
+        if not isinstance(old_string, str) or not isinstance(new_string, str):
+            deny("the transition rules could not be loaded — MultiEdit call on %s has an edit missing old_string/new_string." % STATE_REL)
+        if old_string == "":
+            text = new_string
+            continue
+        if old_string not in text:
+            deny("the transition rules could not be loaded — MultiEdit call's old_string was not found verbatim in %s at the point it is applied." % STATE_REL)
+        replace_all = e.get("replace_all") is True
+        if replace_all:
+            text = text.replace(old_string, new_string)
+        else:
+            text = text.replace(old_string, new_string, 1)
+    new_text = text
 else:
     deny("the transition rules could not be loaded — unrecognized tool %s targeting %s." % (tool, STATE_REL))
 
