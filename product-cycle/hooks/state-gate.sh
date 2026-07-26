@@ -245,6 +245,8 @@ def parse_rules(text):
 LITERAL_TOKEN_RE = re.compile(r'^[A-Za-z0-9_./\-]+$')
 
 def literal_target_or_none(raw_token):
+    if not raw_token:
+        return None
     tok = raw_token
     if len(tok) >= 2 and tok[0] == "'" and tok[-1] == "'":
         inner = tok[1:-1]
@@ -271,6 +273,17 @@ BASH_WRITE_OPS = [
     re.compile(r'\bdd\b[^|;&\n]*\bof=([^\s;&|<>]+)'),
     re.compile(r'\binstall\b\s+.*?([^\s;&|<>]+)\s*(?:[;&|\n]|$)'),
 ]
+
+# write-through-another-tool: e.g. `python3 -c "open(path,
+# 'w').write(...)"`. Judged by RESOLVED TARGET PATH like every other idiom
+# above, not by which tool performs the write. Handled separately from
+# BASH_WRITE_OPS (rather than folded into it) because a python open() call's
+# target may be a clean literal, OR built from concatenation/a variable — in
+# which case it is write-shaped (PY_OPEN_WRITE_RE matches) but has no
+# extractable literal (PY_OPEN_LITERAL_RE does not match), and must be
+# treated as an indeterminate target, never silently skipped.
+PY_OPEN_WRITE_RE = re.compile(r"\bopen\s*\([^)]*,\s*['\"][wxa][^'\"]*['\"]")
+PY_OPEN_LITERAL_RE = re.compile(r"\bopen\s*\(\s*['\"]([^'\"]*)['\"]\s*,\s*['\"][wxa]")
 
 real_root = posixpath.normpath(os.path.realpath(root).replace("\\", "/"))
 state_abs_target = posixpath.normpath(posixpath.join(real_root, STATE_REL))
@@ -397,13 +410,57 @@ elif tool == "Bash":
                     if looks_state_shaped(raw_token) or looks_state_shaped(command):
                         reaches_state = True
                         unresolved_bash = True
+                    elif "docs/reports/records/" in command:
+                        # §11: a write-capable Bash op whose target cannot
+                        # be resolved statically, in a command that names
+                        # the owned record tree, is default-denied rather
+                        # than allowed through — the target might land on
+                        # a foreign record and this gate cannot prove it
+                        # doesn't.
+                        deny(
+                            "a Bash write-capable command's target path could not be "
+                            "statically resolved, and the command references the owned "
+                            "record tree (docs/reports/records/). Per §11, an indeterminate "
+                            "write target within that tree is default-denied rather than "
+                            "allowed through."
+                        )
                     # else: not write-shaped toward product/state.md's
-                    # directory — do not deny globally; keep scanning other
-                    # ops in the same command line.
+                    # directory or the owned record tree — do not deny
+                    # globally; keep scanning other ops in the same command
+                    # line.
                     continue
                 is_state, resolved = resolves_to_state_file(cand)
                 if is_state:
                     reaches_state = True
+                    continue
+                rel_cand = repo_relative_or_none(cand)
+                if rel_cand is not None:
+                    check_owned_path_write(rel_cand, "")
+
+        if PY_OPEN_WRITE_RE.search(command):
+            found_op = True
+            lit_m = PY_OPEN_LITERAL_RE.search(command)
+            lit_cand = literal_target_or_none(lit_m.group(1)) if lit_m else None
+            if lit_cand is None:
+                if looks_state_shaped(command):
+                    reaches_state = True
+                    unresolved_bash = True
+                elif "docs/reports/records/" in command:
+                    deny(
+                        "a Bash write-capable python open() call's target path could not "
+                        "be statically resolved (built from concatenation or a variable), "
+                        "and the command references the owned record tree "
+                        "(docs/reports/records/). Per §11, an indeterminate write target "
+                        "within that tree is default-denied rather than allowed through."
+                    )
+            else:
+                is_state, resolved = resolves_to_state_file(lit_cand)
+                if is_state:
+                    reaches_state = True
+                else:
+                    rel_lit = repo_relative_or_none(lit_cand)
+                    if rel_lit is not None:
+                        check_owned_path_write(rel_lit, "")
 
         if not found_op:
             allow()

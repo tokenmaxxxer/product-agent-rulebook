@@ -259,6 +259,46 @@ else
   fail "(l) the gate's own location changed its decision (in-repo exit $code_in, out-of-tree exit $code_out) — out: $out_out | in: $out_in"
 fi
 
+# --- (m) write-detection bypass fix (docs/proposals/2026-07-26-fix-state-gate-writeop-bypass.md)
+# Root resolution for this gate is always anchored to the hook's own git
+# root (never CLAUDE_PROJECT_DIR), so these three cases operate directly
+# against THIS repo's checkout with a scratch subject, cleaned up on exit.
+scratch_subject="gatefix-bypass-test"
+scratch_dir="$repo_root/docs/reports/records/$scratch_subject"
+cleanup_scratch() { rm -rf "$scratch_dir"; }
+trap 'cleanup_scratch; rm -rf "$work"' EXIT
+cleanup_scratch
+mkdir -p "$scratch_dir"
+
+payload_m1='{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('"'"'docs/reports/records/'"$scratch_subject"'/coding.md'"'"','"'"'w'"'"').write('"'"'x'"'"')\""}}'
+out_m1="$(cd "$repo_root" && printf '%s' "$payload_m1" | "$gate" 2>&1)"
+code_m1=$?
+if [ "$code_m1" -ne 0 ]; then
+  pass "(m1) Bash python3-open write to a foreign role's record is refused (exit $code_m1)"
+else
+  fail "(m1) Bash python3-open write to a foreign role's record was ALLOWED (exit 0): $out_m1"
+fi
+
+payload_m2="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"docs/reports/records/$scratch_subject/product.md\",\"content\":\"status: idle\\nhypothesis: docs/proposals/2026-07-26-sample.md\\n\"}}"
+out_m2="$(cd "$repo_root" && printf '%s' "$payload_m2" | "$gate" 2>&1)"
+code_m2=$?
+if [ "$code_m2" -eq 0 ]; then
+  pass "(m2) legal write to product's own record slot is allowed (exit 0)"
+else
+  fail "(m2) legal write to product's own record slot was DENIED (exit $code_m2): $out_m2"
+fi
+
+payload_m3='{"tool_name":"Bash","tool_input":{"command":"python3 -c \"import sys; open('"'"'docs/reports/records/'"'"' + sys.argv[1] + '"'"'/coding.md'"'"','"'"'w'"'"').write('"'"'x'"'"')\" '"$scratch_subject"'"}}'
+out_m3="$(cd "$repo_root" && printf '%s' "$payload_m3" | "$gate" 2>&1)"
+code_m3=$?
+if [ "$code_m3" -ne 0 ]; then
+  pass "(m3) Bash python3-open write with indeterminate target in the owned record tree is refused (exit $code_m3)"
+else
+  fail "(m3) Bash python3-open write with indeterminate target in the owned record tree was ALLOWED (exit 0): $out_m3"
+fi
+
+cleanup_scratch
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]
