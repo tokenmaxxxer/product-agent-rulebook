@@ -64,7 +64,7 @@
 # any other unrelated write.
 #
 # Kill switch: export PRODUCT_CYCLE_OFF=1
-set -uo pipefail
+set -euo pipefail
 
 deny() {
   echo "product-cycle: refused — $1" >&2
