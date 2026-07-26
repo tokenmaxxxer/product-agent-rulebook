@@ -8,6 +8,8 @@ set -uo pipefail
 
 hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd -P)"
 gate="$hook_dir/state-gate.sh"
+repo_root="$(cd "$hook_dir/../.." >/dev/null 2>&1 && pwd -P)"
+contract_src="$repo_root/docs/specs/role-handoff-contract.md"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -29,7 +31,8 @@ run_gate() {
 setup_root() {
   local dir="$1" stage="$2"
   rm -rf "$dir"
-  mkdir -p "$dir/product"
+  mkdir -p "$dir/product" "$dir/docs/specs"
+  cp "$contract_src" "$dir/docs/specs/role-handoff-contract.md"
   if [ -n "$stage" ]; then
     cat > "$dir/product/state.md" <<EOF
 ---
@@ -158,7 +161,7 @@ fi
 
 # --- (g) existing state file with `stage: (none)` -> DENY, rules-could-not-be-loaded
 root_g="$work/g"
-rm -rf "$root_g"; mkdir -p "$root_g/product"
+rm -rf "$root_g"; mkdir -p "$root_g/product" "$root_g/docs/specs"; cp "$contract_src" "$root_g/docs/specs/role-handoff-contract.md"
 cat > "$root_g/product/state.md" <<'EOF'
 ---
 stage: (none)
@@ -177,7 +180,7 @@ fi
 
 # --- (h) existing state file with empty stage value -> DENY likewise -----
 root_h="$work/h"
-rm -rf "$root_h"; mkdir -p "$root_h/product"
+rm -rf "$root_h"; mkdir -p "$root_h/product" "$root_h/docs/specs"; cp "$contract_src" "$root_h/docs/specs/role-handoff-contract.md"
 cat > "$root_h/product/state.md" <<'EOF'
 ---
 stage:
@@ -208,7 +211,7 @@ fi
 
 # --- (j) existing state file with valid value + trailing whitespace/CRLF -> treated as that valid state
 root_j="$work/j"
-rm -rf "$root_j"; mkdir -p "$root_j/product"
+rm -rf "$root_j"; mkdir -p "$root_j/product" "$root_j/docs/specs"; cp "$contract_src" "$root_j/docs/specs/role-handoff-contract.md"
 printf -- '---\r\nstage: idle   \r\nmetric: 7-day activation rate\r\nthreshold: >= 20%%\r\n---\r\n' > "$root_j/product/state.md"
 payload_j="$(json_write "$root_j" "scoping")"
 run_gate "$root_j" "$payload_j"
@@ -221,7 +224,7 @@ fi
 
 # --- (k) state file genuinely absent -> (none) -> X bootstrap row still ALLOWED
 root_k="$work/k"
-rm -rf "$root_k"; mkdir -p "$root_k/product"
+rm -rf "$root_k"; mkdir -p "$root_k/product" "$root_k/docs/specs"; cp "$contract_src" "$root_k/docs/specs/role-handoff-contract.md"
 payload_k="$(json_write "$root_k" "idle")"
 run_gate "$root_k" "$payload_k"
 code_k=$?
