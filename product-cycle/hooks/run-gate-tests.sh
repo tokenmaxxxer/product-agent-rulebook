@@ -909,6 +909,48 @@ else
 fi
 rm -rf "$root_fc"
 
+# --- (fc-trap) PRE-LOGIC ABORT on every PreToolUse gate -> DENY (exit 2) ---
+# Contract: a gate that aborts for ANY reason BEFORE its verdict logic runs
+# (a failed `source`, a `set -euo pipefail` abort, an unbound var, a syntax
+# path) exits non-2, and PreToolUse treats any non-2 exit as NON-BLOCKING
+# (fail-OPEN). The fail-closed trap installed as each gate's FIRST executable
+# statement must convert any such non-0/non-2 exit into 2 (DENY).
+#
+# We exercise the ACTUAL installed trap: copy each real gate and inject an
+# early forced failure (`exit 3`) on the line immediately after its
+# `trap __fc EXIT` — i.e. a pre-logic abort that never reaches verdict logic.
+# A correctly-installed trap remaps that to exit 2.
+trap_dir="$work/fctrap"
+mkdir -p "$trap_dir"
+for gname in state-gate record-fields-gate path-ownership-gate doc-bucket-gate \
+             handbook-trigger-gate trailer-gate scope-record-gate; do
+  src="$hook_dir/$gname.sh"
+  cp="$trap_dir/$gname.sh"
+  # Verify the fail-closed trap is present and precedes `set`/`source`.
+  first_exec="$(grep -nE '^[[:space:]]*(set|source|\.)[[:space:]]' "$src" | head -1 | cut -d: -f1)"
+  trap_line="$(grep -nE '^trap __fc EXIT$' "$src" | head -1 | cut -d: -f1)"
+  if [ -z "$trap_line" ]; then
+    fail "(fc-trap:$gname) no 'trap __fc EXIT' fail-closed trap installed"
+    continue
+  fi
+  if [ -n "$first_exec" ] && [ "$trap_line" -gt "$first_exec" ]; then
+    fail "(fc-trap:$gname) fail-closed trap (line $trap_line) is AFTER set/source (line $first_exec)"
+    continue
+  fi
+  # Inject a pre-logic abort right after the trap installation line.
+  awk -v tl="$trap_line" 'NR==tl{print; print "false; exit 3"; next} {print}' "$src" > "$cp"
+  chmod +x "$cp"
+  printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"product/state.md","content":"x"}}' \
+    | CLAUDE_PROJECT_DIR="$root_a" "$cp" >/dev/null 2>&1
+  code_fc=$?
+  if [ "$code_fc" -eq 2 ]; then
+    pass "(fc-trap:$gname) pre-logic abort (rc=3) remapped to DENY (exit 2) by fail-closed trap"
+  else
+    fail "(fc-trap:$gname) pre-logic abort produced exit $code_fc (expected 2 = DENY, fail-OPEN otherwise)"
+  fi
+done
+rm -rf "$trap_dir"
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]

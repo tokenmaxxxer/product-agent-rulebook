@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Fail-closed trap (must be the FIRST executable statement, above set/source):
+# any abnormal termination — a failed source, a set -euo abort, an unbound
+# var, a syntax path — exits non-2; PreToolUse treats non-2 as NON-BLOCKING
+# (fail-OPEN). Force any exit that is neither 0 (allow) nor 2 (deny) to 2 (DENY).
+__fc(){ rc=$?; if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then echo "product-cycle: fail-closed — gate aborted (rc=$rc)" >&2; exit 2; fi; }
+trap __fc EXIT
 # PreToolUse hook (Write|Edit|NotebookEdit|Bash): enforces product-cycle's
 # state machine, and (per docs/specs/role-handoff-contract.md v2) the
 # handoff contract's write-side rules, against the RESOLVED TARGET PATH
