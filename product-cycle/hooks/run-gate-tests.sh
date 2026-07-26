@@ -861,6 +861,54 @@ else
 fi
 rm -rf "$root_v4"
 
+# === fail-closed-on-internal-error
+# (proposal: docs/proposals/2026-07-26-gates-fail-closed-on-internal-error.md)
+# A crash-inducing payload — an embedded null byte in file_path (which makes
+# os.path.realpath raise ValueError) or malformed JSON — must resolve to
+# exit 2 (DENY). A PreToolUse hook BLOCKS only on exit 2 and treats every other
+# non-zero exit as NON-blocking (fail-open), so an internal crash that exits 1
+# would let the guarded write through. Assert exit == 2 exactly.
+root_fc="$work/fc"; setup_root "$root_fc" "idle"
+
+# (fc1) state-gate: null byte in file_path -> DENY (exit 2)
+nb_state="$(python3 -c 'import json;print(json.dumps({"tool_name":"Write","tool_input":{"file_path":"product/"+chr(0)+"state.md","content":"---\nstage: measuring\n---\n"}}))')"
+printf '%s' "$nb_state" | CLAUDE_PROJECT_DIR="$root_fc" "$gate" >/dev/null 2>&1
+code_fc=$?
+if [ "$code_fc" -eq 2 ]; then
+  pass "(fc1) state-gate denies (exit 2) on a null-byte file_path"
+else
+  fail "(fc1) state-gate exit $code_fc on a null-byte file_path (expected 2 = DENY)"
+fi
+
+# (fc2) state-gate: malformed JSON -> DENY (exit 2)
+printf '%s' '{ this is not valid json' | CLAUDE_PROJECT_DIR="$root_fc" "$gate" >/dev/null 2>&1
+code_fc=$?
+if [ "$code_fc" -eq 2 ]; then
+  pass "(fc2) state-gate denies (exit 2) on malformed JSON"
+else
+  fail "(fc2) state-gate exit $code_fc on malformed JSON (expected 2 = DENY)"
+fi
+
+# (fc3) scope-record-gate: null byte in a front-record file_path -> DENY (exit 2)
+nb_scope="$(python3 -c 'import json;print(json.dumps({"tool_name":"Write","tool_input":{"file_path":"docs/reports/records/x"+chr(0)+"y/product.md","content":"loop_state: scope-approved"}}))')"
+printf '%s' "$nb_scope" | CLAUDE_PROJECT_DIR="$root_fc" "$scope_gate" >/dev/null 2>&1
+code_fc=$?
+if [ "$code_fc" -eq 2 ]; then
+  pass "(fc3) scope-record-gate denies (exit 2) on a null-byte file_path"
+else
+  fail "(fc3) scope-record-gate exit $code_fc on a null-byte file_path (expected 2 = DENY)"
+fi
+
+# (fc4) scope-record-gate: malformed JSON -> DENY (exit 2)
+printf '%s' '{ this is not valid json' | CLAUDE_PROJECT_DIR="$root_fc" "$scope_gate" >/dev/null 2>&1
+code_fc=$?
+if [ "$code_fc" -eq 2 ]; then
+  pass "(fc4) scope-record-gate denies (exit 2) on malformed JSON"
+else
+  fail "(fc4) scope-record-gate exit $code_fc on malformed JSON (expected 2 = DENY)"
+fi
+rm -rf "$root_fc"
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]

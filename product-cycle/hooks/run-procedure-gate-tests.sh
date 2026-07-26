@@ -134,6 +134,40 @@ run trailer-gate.sh "$R" "$(json_bash 'git commit -m "unrelated"')"
 [ $? -eq 0 ] && pass "trailer-gate allows a commit that stages no product unit" || fail "trailer-gate DENIED a non-product commit: $OUT"
 rm -rf "$R"
 
+echo "== fail-closed-on-internal-error (all gates) =="
+# proposal: docs/proposals/2026-07-26-gates-fail-closed-on-internal-error.md
+# A crash-inducing payload — an embedded null byte in file_path (making
+# os.path.realpath raise ValueError) or malformed JSON — must resolve to
+# exit 2 (DENY). A PreToolUse hook BLOCKS only on exit 2 and treats every
+# other non-zero exit as NON-blocking (fail-open), so a bare crash exiting 1
+# would let the guarded tool call through. Assert exit == 2 exactly.
+FC="$(new_root)"; mkdir -p "$FC/docs/reports/records/subj-fc"
+json_null_fp() { # <tool_name> <relpath with @NUL@ placeholder>
+  python3 -c 'import json,sys;fp=sys.argv[2].replace("@NUL@",chr(0));print(json.dumps({"tool_name":sys.argv[1],"tool_input":{"file_path":fp,"content":"loop_state: scope-approved"}}))' "$1" "$2"
+}
+BAD_JSON='{ this is not valid json'
+
+# path-resolving gates: BOTH a null-byte file_path and malformed JSON must DENY.
+for g in record-fields-gate path-ownership-gate doc-bucket-gate scope-record-gate; do
+  run "$g.sh" "$FC" "$(json_null_fp Write "docs/reports/records/x@NUL@y/product.md")"
+  c=$?
+  [ "$c" -eq 2 ] && pass "$g denies (exit 2) on a null-byte file_path" \
+                 || fail "$g exit $c on a null-byte file_path (expected 2 = DENY): $OUT"
+  run "$g.sh" "$FC" "$BAD_JSON"
+  c=$?
+  [ "$c" -eq 2 ] && pass "$g denies (exit 2) on malformed JSON" \
+                 || fail "$g exit $c on malformed JSON (expected 2 = DENY): $OUT"
+done
+
+# commit-time (Bash) gates: malformed JSON must DENY (exit 2).
+for g in handbook-trigger-gate trailer-gate; do
+  run "$g.sh" "$FC" "$BAD_JSON"
+  c=$?
+  [ "$c" -eq 2 ] && pass "$g denies (exit 2) on malformed JSON" \
+                 || fail "$g exit $c on malformed JSON (expected 2 = DENY): $OUT"
+done
+rm -rf "$FC"
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]

@@ -27,7 +27,8 @@ command -v python3 >/dev/null 2>&1 || deny "path-ownership-gate.sh requires pyth
 payload="$(cat 2>/dev/null || true)"
 [ -n "$payload" ] || deny "empty tool-use payload on stdin; cannot evaluate the path-ownership gate (fail-closed)."
 
-PRODUCT_PAYLOAD="$payload" python3 <<'PY'
+_gate_rc=0
+PRODUCT_PAYLOAD="$payload" python3 <<'PY' || _gate_rc=$?
 import json, os, posixpath, re, subprocess, sys
 
 def deny(msg):
@@ -36,6 +37,27 @@ def deny(msg):
 
 def allow():
     sys.exit(0)
+
+# --- fail-closed-on-internal-error (python layer) --------------------------
+# Proposal: docs/proposals/2026-07-26-gates-fail-closed-on-internal-error.md
+# Any UNCAUGHT exception in the judge body below (most notably
+# os.path.realpath / os.path.* raising ValueError on a null-byte or
+# undecodable path) would otherwise let Python exit 1 — and a Claude Code
+# PreToolUse hook treats every non-2 exit as NON-blocking (fail-OPEN),
+# letting the guarded tool call through. Map any such internal error to
+# exit 2 (DENY) instead. This changes ONLY the error path; the explicit
+# allow()/deny() (SystemExit) verdict paths are unaffected — SystemExit is
+# not routed through sys.excepthook.
+def _fail_closed_excepthook(_etype, _evalue, _tb):
+    try:
+        sys.stderr.write(
+            "product-cycle: refused — fail-closed: internal error (%s: %s)\n"
+            % (getattr(_etype, "__name__", _etype), _evalue))
+    except Exception:
+        pass
+    os._exit(2)
+
+sys.excepthook = _fail_closed_excepthook
 
 raw = os.environ.get("PRODUCT_PAYLOAD", "")
 try:
@@ -147,3 +169,8 @@ if m:
 # handbooks shared-write, and non-doc source paths) is not a §11 foreign write.
 allow()
 PY
+if [ "$_gate_rc" -ne 0 ] && [ "$_gate_rc" -ne 2 ]; then
+  echo "product-cycle: refused — fail-closed: internal error (gate judge exited $_gate_rc)" >&2
+  exit 2
+fi
+exit "$_gate_rc"

@@ -142,7 +142,8 @@ if [ -z "$root" ]; then
 fi
 [ -n "$root" ] || deny "no project root could be determined: CLAUDE_PROJECT_DIR is unset or failed validation (target-under-root / plausible-project-root check), and no git top-level was found for the tool call's target or for cwd. Refusing rather than silently allowing an indeterminate-root write."
 
-PRODUCT_ROOT="$root" PRODUCT_PAYLOAD="$payload" PRODUCT_RULES_PATH="$rules_path" python3 <<'PY'
+status=0
+PRODUCT_ROOT="$root" PRODUCT_PAYLOAD="$payload" PRODUCT_RULES_PATH="$rules_path" python3 <<'PY' || status=$?
 import json
 import os
 import posixpath
@@ -155,6 +156,27 @@ def deny(msg):
 
 def allow():
     sys.exit(0)
+
+# --- fail-closed-on-internal-error (python layer) --------------------------
+# Proposal: docs/proposals/2026-07-26-gates-fail-closed-on-internal-error.md
+# Any UNCAUGHT exception in the judge body below (most notably
+# os.path.realpath / os.path.* raising ValueError on a null-byte or
+# undecodable path) would otherwise let Python exit 1 — and a Claude Code
+# PreToolUse hook treats every non-2 exit as NON-blocking (fail-OPEN),
+# letting the guarded tool call through. Map any such internal error to
+# exit 2 (DENY) instead. This changes ONLY the error path; the explicit
+# allow()/deny() (SystemExit) verdict paths are unaffected — SystemExit is
+# not routed through sys.excepthook.
+def _fail_closed_excepthook(_etype, _evalue, _tb):
+    try:
+        sys.stderr.write(
+            "product-cycle: refused — fail-closed: internal error (%s: %s)\n"
+            % (getattr(_etype, "__name__", _etype), _evalue))
+    except Exception:
+        pass
+    os._exit(2)
+
+sys.excepthook = _fail_closed_excepthook
 
 root = os.environ["PRODUCT_ROOT"]
 rules_path = os.environ["PRODUCT_RULES_PATH"]
@@ -767,5 +789,8 @@ deny(
     "for %s." % (old_stage, new_stage, STATE_REL)
 )
 PY
-status=$?
+if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+  echo "product-cycle: refused — fail-closed: internal error (gate judge exited $status)" >&2
+  exit 2
+fi
 exit "$status"
