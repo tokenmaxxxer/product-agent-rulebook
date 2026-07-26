@@ -54,12 +54,48 @@ if not re.match(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$', subject):
 
 # --- unambiguous scope-approval detection ------------------------------
 # Require an explicit approval keyword tied to scope, not bare assent.
+#
+# `\bscope-?approved\b` used to be a third alternative here, and it was a hole
+# straight through §19: it matches the NAME OF THE STATE, so any sentence that
+# merely mentions the transition minted a token for it. Measured 2026-07-27,
+# all three of these produced a valid, consumable token for a real subject:
+#
+#   "subject <id> 의 scope-approved 게이트에 닿으면 멈춰라. 대신 승인하지 마라."
+#   "§19 는 subject <id> 의 loop_state 를 scope-approved 로 올리는 …"   (quoting
+#                                                                       the contract)
+#   "subject <id> 의 scope 를 approve 한다."                            (the real thing)
+#
+# The first is a REFUSAL to approve, and the token it minted carried that
+# refusal verbatim in its own `phrase:` field. The second is the contract's own
+# text. A gate the contract calls "human-owned, never self-certified" was
+# trippable by an agent explaining that it must not approve.
+#
+# Naming a transition is not performing it. Approval now requires an approval
+# VERB bound to the scope — including a Korean form, so that dropping the
+# state-name alternative does not leave a Korean-speaking human with no way to
+# approve at all.
+#
+# The state name is blanked out first. Dropping the third alternative was not
+# enough on its own: `\bscope\b[^.\n]*\bapproved\b` also spans the literal
+# `scope-approved`, because the hyphen is a word boundary. So "이 subject 는
+# 아직 scope-approved 가 아니다" — a statement that it is NOT approved — still
+# minted a token. `scope-approved` is an identifier; it is never a speech act.
+speech = re.sub(r'(?i)\bscope[-_ ]?approved\b', ' <state> ', prompt)
 approves = re.search(
     r'(?i)\b(approve|approved|approving)\b[^.\n]*\bscope\b'
     r'|\bscope\b[^.\n]*\b(approved|is approved|looks good to approve|approve)\b'
-    r'|\bscope-?approved\b',
-    prompt)
+    r'|(?:scope|스코프|범위)[^.\n]*승인(?!\s*(?:하지|말|안))',
+    speech)
 if not approves:
+    bail()
+# An approval verb inside a negation is not an approval. The window covers the
+# clause before the match, which is where English negation sits ("do not
+# approve the scope"); Korean negation trails the verb and is handled by the
+# lookahead above.
+NEGATED = re.compile(r'(?i)\b(do not|don\'?t|never|must not|cannot|can\'?t|'
+                     r'without|refus|decline|instead of)\b'
+                     r'|하지\s*마|하지\s*말|말고|말라|않는다|없이|금지')
+if NEGATED.search(speech[max(0, approves.start() - 60):approves.end() + 30]):
     bail()
 # Reject bare assent even if a keyword coincidentally appears.
 if re.match(r'^\s*(ok|okay|sure|sounds good|yep|yes|k|fine)\s*[.!]?\s*$', prompt, re.I):
