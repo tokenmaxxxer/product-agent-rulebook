@@ -536,6 +536,136 @@ else
 fi
 rm -rf "$root_n4"
 
+# === tool-agnostic default-deny (docs/proposals/2026-07-26-scope-record-gate-tool-agnostic.md)
+# The Write/Edit/MultiEdit dispatch used to end in `else: allow()`, so
+# NotebookEdit (and any other/future tool) landed the front record at
+# scope-approved with zero token check. These cases prove: (1) NotebookEdit
+# and an arbitrary unrecognized tool are both refused tokenless, (2) every
+# recognized tool passes with a valid token, (3) every recognized tool still
+# passes for a normal, non-scope-approved write.
+json_notebookedit() { # <path> <new_source>
+  python3 -c 'import json,sys;print(json.dumps({"tool_name":"NotebookEdit","tool_input":{"notebook_path":sys.argv[1],"new_source":sys.argv[2]}}))' "$1" "$2"
+}
+json_unknown_tool() { # <path> <content>
+  python3 -c 'import json,sys;print(json.dumps({"tool_name":"SomeFutureTool","tool_input":{"file_path":sys.argv[1],"content":sys.argv[2]}}))' "$1" "$2"
+}
+
+approved_body() { # <subject>
+  printf -- '---\nkind: product-record\nsubject: %s\nloop_state: scope-approved\n---\nscope approved\n' "$1"
+}
+proposed_body() { # <subject>
+  printf -- '---\nkind: product-record\nsubject: %s\nloop_state: scope-proposed\n---\n' "$1"
+}
+mint_token() { # <root> <subject>
+  local mint_prompt
+  mint_prompt="$(python3 -c 'import json,sys;print(json.dumps({"prompt":"I approve the scope for subject "+sys.argv[1]+"; scope looks good."}))' "$2")"
+  printf '%s' "$mint_prompt" | CLAUDE_PROJECT_DIR="$1" "$token_hook" >/dev/null 2>&1
+}
+
+# --- (t1) NotebookEdit-authored, tokenless scope-approved -> REFUSED -------
+root_t1="$(new_scope_root)"
+subj_t1="tool-agnostic-notebookedit"
+mkdir -p "$root_t1/docs/reports/records/$subj_t1"
+proposed_body "$subj_t1" > "$root_t1/docs/reports/records/$subj_t1/product.md"
+payload_t1="$(json_notebookedit "docs/reports/records/$subj_t1/product.md" "$(approved_body "$subj_t1")")"
+out_t1="$(cd "$root_t1" && printf '%s' "$payload_t1" | CLAUDE_PROJECT_DIR="$root_t1" "$scope_gate" 2>&1)"
+code_t1=$?
+if [ "$code_t1" -ne 0 ]; then
+  pass "(t1) NotebookEdit-authored tokenless scope-approved transition is refused (exit $code_t1)"
+else
+  fail "(t1) NotebookEdit-authored tokenless scope-approved transition was ALLOWED (exit 0): $out_t1"
+fi
+rm -rf "$root_t1"
+
+# --- (t2) unrecognized/other-tool, tokenless scope-approved -> REFUSED -----
+root_t2="$(new_scope_root)"
+subj_t2="tool-agnostic-unknown"
+mkdir -p "$root_t2/docs/reports/records/$subj_t2"
+proposed_body "$subj_t2" > "$root_t2/docs/reports/records/$subj_t2/product.md"
+payload_t2="$(json_unknown_tool "docs/reports/records/$subj_t2/product.md" "$(approved_body "$subj_t2")")"
+out_t2="$(cd "$root_t2" && printf '%s' "$payload_t2" | CLAUDE_PROJECT_DIR="$root_t2" "$scope_gate" 2>&1)"
+code_t2=$?
+if [ "$code_t2" -ne 0 ]; then
+  pass "(t2) unrecognized-tool tokenless scope-approved transition is refused (exit $code_t2)"
+else
+  fail "(t2) unrecognized-tool tokenless scope-approved transition was ALLOWED (exit 0): $out_t2"
+fi
+rm -rf "$root_t2"
+
+# --- (t3) properly-tokened transition PASSES for every tool ---------------
+subj_t3="tool-agnostic-tokened"
+for tname in Write Edit MultiEdit NotebookEdit Bash; do
+  root_t3="$(new_scope_root)"
+  mkdir -p "$root_t3/docs/reports/records/$subj_t3"
+  proposed_body "$subj_t3" > "$root_t3/docs/reports/records/$subj_t3/product.md"
+  mint_token "$root_t3" "$subj_t3"
+  case "$tname" in
+    Write)
+      payload_t3="$(json_write_generic "docs/reports/records/$subj_t3/product.md" "$(approved_body "$subj_t3")")"
+      ;;
+    Edit)
+      payload_t3="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Edit","tool_input":{"file_path":sys.argv[1],"old_string":"loop_state: scope-proposed","new_string":"loop_state: scope-approved"}}))' "docs/reports/records/$subj_t3/product.md")"
+      ;;
+    MultiEdit)
+      payload_t3="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"MultiEdit","tool_input":{"file_path":sys.argv[1],"edits":[{"old_string":"loop_state: scope-proposed","new_string":"loop_state: scope-approved"}]}}))' "docs/reports/records/$subj_t3/product.md")"
+      ;;
+    NotebookEdit)
+      payload_t3="$(json_notebookedit "docs/reports/records/$subj_t3/product.md" "$(approved_body "$subj_t3")")"
+      ;;
+    Bash)
+      bash_cmd_t3="cat > docs/reports/records/$subj_t3/product.md <<'EOF'
+$(approved_body "$subj_t3")
+EOF"
+      payload_t3="$(json_bash_generic "$bash_cmd_t3")"
+      ;;
+  esac
+  out_t3="$(cd "$root_t3" && printf '%s' "$payload_t3" | CLAUDE_PROJECT_DIR="$root_t3" "$scope_gate" 2>&1)"
+  code_t3=$?
+  if [ "$code_t3" -eq 0 ]; then
+    pass "(t3-$tname) tokened scope-approved transition via $tname is allowed"
+  else
+    fail "(t3-$tname) tokened scope-approved transition via $tname was DENIED (exit $code_t3): $out_t3"
+  fi
+  rm -rf "$root_t3"
+done
+
+# --- (t4) normal, non-scope-approved write still PASSES for every tool -----
+subj_t4="tool-agnostic-normal"
+for tname in Write Edit MultiEdit NotebookEdit Bash; do
+  root_t4="$(new_scope_root)"
+  mkdir -p "$root_t4/docs/reports/records/$subj_t4"
+  proposed_body "$subj_t4" > "$root_t4/docs/reports/records/$subj_t4/product.md"
+  updated_body="$(printf -- '---\nkind: product-record\nsubject: %s\nloop_state: scope-proposed\nnote: still gathering\n---\n' "$subj_t4")"
+  case "$tname" in
+    Write)
+      payload_t4="$(json_write_generic "docs/reports/records/$subj_t4/product.md" "$updated_body")"
+      ;;
+    Edit)
+      payload_t4="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Edit","tool_input":{"file_path":sys.argv[1],"old_string":"loop_state: scope-proposed","new_string":"loop_state: scope-proposed\nnote: still gathering"}}))' "docs/reports/records/$subj_t4/product.md")"
+      ;;
+    MultiEdit)
+      payload_t4="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"MultiEdit","tool_input":{"file_path":sys.argv[1],"edits":[{"old_string":"loop_state: scope-proposed","new_string":"loop_state: scope-proposed\nnote: still gathering"}]}}))' "docs/reports/records/$subj_t4/product.md")"
+      ;;
+    NotebookEdit)
+      payload_t4="$(json_notebookedit "docs/reports/records/$subj_t4/product.md" "$updated_body")"
+      ;;
+    Bash)
+      bash_cmd_t4="cat > docs/reports/records/$subj_t4/product.md <<'EOF'
+$updated_body
+EOF"
+      payload_t4="$(json_bash_generic "$bash_cmd_t4")"
+      ;;
+  esac
+  out_t4="$(cd "$root_t4" && printf '%s' "$payload_t4" | CLAUDE_PROJECT_DIR="$root_t4" "$scope_gate" 2>&1)"
+  code_t4=$?
+  if [ "$code_t4" -eq 0 ]; then
+    pass "(t4-$tname) normal non-scope-approved write via $tname still passes"
+  else
+    fail "(t4-$tname) normal non-scope-approved write via $tname was DENIED (exit $code_t4): $out_t4"
+  fi
+  rm -rf "$root_t4"
+done
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]

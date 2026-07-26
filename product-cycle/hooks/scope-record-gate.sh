@@ -29,6 +29,16 @@
 # missing tool_input/path, indeterminate project root, unreadable on-disk file
 # for an Edit, or an unresolvable Edit are all DENY.
 #
+# Tool-agnostic default-deny (docs/proposals/2026-07-26-scope-record-gate-tool-agnostic.md):
+# the Write/Edit/MultiEdit dispatch below used to end in `else: allow()`, so
+# NotebookEdit (or any other/future tool) landed the front record at
+# scope-approved with zero token check. The terminal branch now instead tries
+# to extract a literal resulting text from the call's payload (covers
+# NotebookEdit's new_source/cells today) and judges it exactly like a Write's
+# content; if no content-bearing field can be found, the call is refused
+# rather than allowed. There is no tool name for which this gate silently
+# allows an indeterminate write to the front record.
+#
 # Kill switch: export PRODUCT_CYCLE_OFF=1
 set -euo pipefail
 
@@ -400,7 +410,44 @@ elif tool == "MultiEdit":
         text = text.replace(o_, n_, (10**9 if e.get("replace_all") is True else 1))
     new_text = text
 else:
-    allow()  # NotebookEdit etc. on a record path — not a scope-transition write
+    # Tool-agnostic default-deny (docs/proposals/2026-07-26-scope-record-gate-tool-agnostic.md):
+    # any tool not named above (NotebookEdit today, anything else tomorrow) is
+    # judged by whether its payload exposes a recognizable content-bearing
+    # field aimed at the front record — never by tool name. If a literal
+    # resulting text can be extracted, it is checked exactly like a Write's
+    # content. If it cannot, that is "may set the gated approved state" per
+    # the fail-closed rule, and the call is refused outright — there is no
+    # remaining branch here that resolves to allow() for an indeterminate
+    # write to the front record.
+    def _generic_content(ti):
+        for key in ("content", "new_source", "text", "data"):
+            v = ti.get(key)
+            if isinstance(v, str):
+                return v
+        cells = ti.get("cells")
+        if isinstance(cells, list):
+            parts = []
+            for c in cells:
+                if not isinstance(c, dict):
+                    continue
+                src = c.get("source") if "source" in c else c.get("new_source")
+                if isinstance(src, str):
+                    parts.append(src)
+                elif isinstance(src, list) and all(isinstance(x, str) for x in src):
+                    parts.append("".join(src))
+            if parts:
+                return "\n".join(parts)
+        return None
+
+    generic_content = _generic_content(tool_input)
+    if generic_content is None:
+        deny(
+            "tool '%s' targets the front record docs/reports/records/%s/product.md but this "
+            "gate cannot literally determine the resulting content from its payload shape "
+            "(fail-closed): a tool call whose effect on the gated scope-approved transition "
+            "cannot be determined is refused, never allowed by default." % (tool, subject)
+        )
+    new_text = generic_content
 
 new_state = loop_state_of(new_text)
 if new_state != "scope-approved":
