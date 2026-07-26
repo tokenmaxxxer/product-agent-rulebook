@@ -391,6 +391,29 @@ fi
 
 cleanup_scratch
 
+# --- (s) simulated missing python3 -> DENY, mentioning python3 -----------
+# Companion to docs/proposals/2026-07-26-fix-fail-open-persistent-tests.md:
+# state-gate.sh's own intake (`command -v python3 || deny ...`) was already
+# fail-closed before that proposal, but no persistent case exercised it.
+# A minimal PATH stub carries only what runs before the python3 check --
+# bash itself, for re-exec -- with python3 deliberately absent.
+root_s="$work/s"
+setup_root "$root_s" "idle"
+payload_s="$(json_write "$root_s" "idle")"
+NO_PYTHON3_STUB="$work/no-python3-stub"
+mkdir -p "$NO_PYTHON3_STUB"
+for _c in bash; do
+  _src="$(command -v "$_c" 2>/dev/null)"
+  [ -n "$_src" ] && ln -sf "$_src" "$NO_PYTHON3_STUB/$_c"
+done
+GATE_OUT="$(printf '%s' "$payload_s" | CLAUDE_PROJECT_DIR="$root_s" PATH="$NO_PYTHON3_STUB" "$NO_PYTHON3_STUB/bash" "$gate" 2>&1)"
+code_s=$?
+if [ "$code_s" -ne 0 ] && printf '%s' "$GATE_OUT" | grep -q "python3"; then
+  pass "(s) simulated missing python3 is denied, mentioning python3 (exit $code_s)"
+else
+  fail "(s) simulated missing python3 was NOT denied properly (exit $code_s): $GATE_OUT"
+fi
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]
