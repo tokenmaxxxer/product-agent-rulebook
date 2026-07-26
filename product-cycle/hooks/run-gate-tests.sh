@@ -666,6 +666,117 @@ EOF"
   rm -rf "$root_t4"
 done
 
+# === deny-on-ambiguity (docs/proposals/2026-07-26-scope-record-gate-deny-on-ambiguity.md)
+# Terminal fix: (a) hooks.json routes scope-record-gate.sh via a catch-all
+# matcher so no tool name escapes it; (b) a Bash write whose captured
+# front-record target/content contains any shell expansion marker is refused
+# rather than judged by its unexpanded literal text.
+
+# --- (u0) hooks.json routes scope-record-gate.sh via a catch-all matcher ---
+hooks_json="$hook_dir/hooks.json"
+if python3 -c '
+import json, re, sys
+data = json.load(open(sys.argv[1]))
+ok = False
+for entry in data["hooks"]["PreToolUse"]:
+    names = [h.get("command", "") for h in entry.get("hooks", [])]
+    if any("scope-record-gate.sh" in n for n in names):
+        matcher = entry.get("matcher", "")
+        if re.fullmatch(matcher, "apply_patch") and re.fullmatch(matcher, "SomeBrandNewTool"):
+            ok = True
+sys.exit(0 if ok else 1)
+' "$hooks_json"; then
+  pass "(u0) hooks.json routes scope-record-gate.sh via a catch-all matcher (matches unenumerated tool names)"
+else
+  fail "(u0) hooks.json does NOT route scope-record-gate.sh via a catch-all matcher"
+fi
+
+# --- (u1) the \$VAR-heredoc bypass is now REFUSED --------------------------
+root_u1="$(new_scope_root)"
+subj_u1="ambiguity-varheredoc"
+mkdir -p "$root_u1/docs/reports/records/$subj_u1"
+proposed_body "$subj_u1" > "$root_u1/docs/reports/records/$subj_u1/product.md"
+bash_u1_cmd="STATE=scope-approved; cat > docs/reports/records/$subj_u1/product.md <<EOF
+---
+kind: product-record
+subject: $subj_u1
+loop_state: \$STATE
+---
+EOF"
+payload_u1="$(json_bash_generic "$bash_u1_cmd")"
+out_u1="$(cd "$root_u1" && printf '%s' "$payload_u1" | CLAUDE_PROJECT_DIR="$root_u1" "$scope_gate" 2>&1)"
+code_u1=$?
+if [ "$code_u1" -ne 0 ]; then
+  pass "(u1) \$VAR-heredoc scope-approved bypass is now refused (exit $code_u1)"
+else
+  fail "(u1) \$VAR-heredoc scope-approved bypass was ALLOWED (exit 0): $out_u1"
+fi
+if grep -q '^loop_state: scope-proposed$' "$root_u1/docs/reports/records/$subj_u1/product.md"; then
+  pass "(u1b) front record on disk is still scope-proposed after the refused \$VAR-heredoc write"
+else
+  fail "(u1b) front record on disk unexpectedly changed despite the refusal"
+fi
+rm -rf "$root_u1"
+
+# --- (u2) catch-all-matched unknown-named tool, tokenless scope-approved -> REFUSED
+root_u2="$(new_scope_root)"
+subj_u2="ambiguity-unknown-tool"
+mkdir -p "$root_u2/docs/reports/records/$subj_u2"
+proposed_body "$subj_u2" > "$root_u2/docs/reports/records/$subj_u2/product.md"
+payload_u2="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"apply_patch","tool_input":{"file_path":sys.argv[1],"content":sys.argv[2]}}))' "docs/reports/records/$subj_u2/product.md" "$(approved_body "$subj_u2")")"
+out_u2="$(cd "$root_u2" && printf '%s' "$payload_u2" | CLAUDE_PROJECT_DIR="$root_u2" "$scope_gate" 2>&1)"
+code_u2=$?
+if [ "$code_u2" -ne 0 ]; then
+  pass "(u2) catch-all-matched unknown tool name, tokenless scope-approved, is refused (exit $code_u2)"
+else
+  fail "(u2) catch-all-matched unknown tool name, tokenless scope-approved, was ALLOWED (exit 0): $out_u2"
+fi
+rm -rf "$root_u2"
+
+# --- (u3) provably-literal non-scope Bash write still PASSES ---------------
+root_u3="$(new_scope_root)"
+subj_u3="ambiguity-literal-nonscope"
+mkdir -p "$root_u3/docs/reports/records/$subj_u3"
+proposed_body "$subj_u3" > "$root_u3/docs/reports/records/$subj_u3/product.md"
+bash_u3_cmd="cat > docs/reports/records/$subj_u3/product.md <<'EOF'
+---
+kind: product-record
+subject: $subj_u3
+loop_state: scope-proposed
+note: still gathering evidence
+---
+EOF"
+payload_u3="$(json_bash_generic "$bash_u3_cmd")"
+out_u3="$(cd "$root_u3" && printf '%s' "$payload_u3" | CLAUDE_PROJECT_DIR="$root_u3" "$scope_gate" 2>&1)"
+code_u3=$?
+if [ "$code_u3" -eq 0 ]; then
+  pass "(u3) provably-literal non-scope-approved Bash write still passes (exit 0)"
+else
+  fail "(u3) provably-literal non-scope-approved Bash write was DENIED (exit $code_u3): $out_u3"
+fi
+rm -rf "$root_u3"
+
+# --- (u4) properly-tokened scope-approved transition still PASSES ----------
+# (single-quoted heredoc marker -> body is provably literal even though it
+# sets loop_state: scope-approved, and a valid token is present).
+root_u4="$(new_scope_root)"
+subj_u4="ambiguity-tokened"
+mkdir -p "$root_u4/docs/reports/records/$subj_u4"
+proposed_body "$subj_u4" > "$root_u4/docs/reports/records/$subj_u4/product.md"
+mint_token "$root_u4" "$subj_u4"
+bash_u4_cmd="cat > docs/reports/records/$subj_u4/product.md <<'EOF'
+$(approved_body "$subj_u4")
+EOF"
+payload_u4="$(json_bash_generic "$bash_u4_cmd")"
+out_u4="$(cd "$root_u4" && printf '%s' "$payload_u4" | CLAUDE_PROJECT_DIR="$root_u4" "$scope_gate" 2>&1)"
+code_u4=$?
+if [ "$code_u4" -eq 0 ]; then
+  pass "(u4) properly-tokened scope-approved transition still passes (exit 0)"
+else
+  fail "(u4) properly-tokened scope-approved transition was DENIED (exit $code_u4): $out_u4"
+fi
+rm -rf "$root_u4"
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]
