@@ -81,22 +81,24 @@ command -v python3 >/dev/null 2>&1 || deny "the transition rules could not be lo
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd -P)" || deny "the transition rules could not be loaded — cannot resolve this hook's own directory."
 rules_path="$script_dir/transition-rules.md"
 
-# Root is discovered by walking UP from the hook's own on-disk location to
-# the nearest enclosing `.git`, never from the process cwd or
-# CLAUDE_PROJECT_DIR — a hook invoked with a cwd outside the repo must still
-# resolve to, and guard, this repo's own state file.
-root=""
-dir="$script_dir"
-while :; do
-  if [ -e "$dir/.git" ]; then
-    root="$dir"
-    break
-  fi
-  parent="$(dirname "$dir")"
-  [ "$parent" = "$dir" ] && break
-  dir="$parent"
-done
-[ -n "$root" ] || deny "the transition rules could not be loaded — no enclosing .git found by walking up from this hook's own directory ($script_dir)."
+# Root is the repository being worked in: CLAUDE_PROJECT_DIR when the harness
+# sets it, otherwise the process cwd, anchored on that directory's git root so
+# an invocation from a subdirectory still resolves to the project root.
+#
+# It is deliberately NOT the nearest `.git` above this hook's own location.
+# That coincides with the project only while the rulebook is vendored into it.
+# Loaded as a plugin from its own checkout — which is how an orchestrator
+# swaps rulebooks per role — it resolves to the RULEBOOK's repo, and the gate
+# then guards a repository nobody is working in: every write in the real
+# project falls outside its owned paths, so it allows all of them and says
+# nothing. Measured 2026-07-26: a `scoped -> verdict` jump skipping `probing`
+# was permitted with exit 0.
+root="${CLAUDE_PROJECT_DIR:-$PWD}"
+if top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
+  root="$top"
+fi
+root="$(cd "$root" 2>/dev/null && pwd -P)" || root=""
+[ -n "$root" ] || deny "the transition rules could not be loaded — could not resolve the project root being worked in (CLAUDE_PROJECT_DIR/cwd)."
 
 payload="$(cat 2>/dev/null)"
 [ -n "$payload" ] || deny "the transition rules could not be loaded — empty tool-use payload on stdin; cannot evaluate the state gate."
@@ -294,7 +296,7 @@ CONTRACT_REL = "docs/specs/role-handoff-contract.md"
 def require_contract():
     # The handoff contract holds only within this single repo. This gate
     # resolves exactly one root (the git root resolved above, by walking
-    # up from this hook's own on-disk location) and checks for
+    # from CLAUDE_PROJECT_DIR/cwd) and checks for
     # docs/specs/role-handoff-contract.md inside THAT root only — no
     # parent/sibling-repo lookup, no SHA pin, no comparison to any other
     # repo's git history. If the contract file is absent, this
