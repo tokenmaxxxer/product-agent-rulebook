@@ -5,8 +5,12 @@ transitions. Read by both `inject-transition-rules.sh` (UserPromptSubmit)
 and `state-gate.sh` (PreToolUse). States are transcribed from
 `docs/specs/state-machine.md` and revised per
 `docs/proposals/2026-07-28-role-workflow-plugins.md`: `idle`, `scoping`,
-`researching`, `hypothesis-registered`, `measuring`, `decided` — the state
-set itself is unchanged; only the row set below grew.
+`researching`, `hypothesis-registered`, `measuring`, `decided`, plus the contract §19 front-record scope-gate
+states `scope-proposed` and `scope-approved` (added by
+docs/proposals/2026-07-26-implement-procedure-hooks-all-rulebooks.md so
+state-gate.sh — fail-closed — recognizes them and scope-record-gate.sh can
+enforce the human-token half of the `scope-proposed -> scope-approved`
+transition).
 
 `actor` is `user` when the transition requires the user to have said
 something in this conversation authorizing it; `agent` when the agent may
@@ -25,8 +29,10 @@ user-gated).
 | measuring | measuring | agent | a collected-data/progress field is being recorded while status: measuring; threshold is not among the changed fields (state-gate.sh's separate threshold-immutability check in measuring still applies and is not loosened by this row) |
 | measuring | decided | agent | the registered decision rule has been mechanically applied to the collected data — deliberately not `actor: user`, since pre-registration exists precisely so this step has no discretionary case |
 | decided | scoping | user | a HiPPO-style conflict between the recorded decision and a senior stakeholder's opinion escalates, and the broadened stakeholder group reopens evidence-gathering (product interaction research, moment 6) — the weakest-sourced row in this table; no terminal forcing rule exists in the research for an unresolved standoff |
+| scoping | scope-proposed | agent | product has written the subject's scope statement (what will be done, intended write surface, out-of-scope, success test) into its front record `docs/reports/records/<subject>/product.md` and set that record's `loop_state: scope-proposed`, per contract §19 — the front record, not `product/state.md`, is what carries this loop_state; this row registers the state name for state-gate.sh's fail-closed table |
+| scope-proposed | scope-approved | user | the human has reviewed the recorded scope statement and approved it, moving the front record from `scope-proposed` to `scope-approved` (contract §19). This is the ONLY path to `scope-approved`; no role sets it on its own or another role's record. scope-record-gate.sh additionally requires an unconsumed human-placed approval token (qa capture-verdict.sh pattern) before the transition is written — the table row records that the transition is legal in principle, the gate enforces that a human actually signaled it |
 
-Five `actor: user` rows.
+Six `actor: user` rows.
 
 Note: `product/opportunity-tree.md` is a separate, non-gated artifact
 maintained by the `opportunity-solution-tree` skill on its own cadence. It
