@@ -54,11 +54,37 @@ refuses handoff-protocol actions when that repo has no
 `docs/specs/role-handoff-contract.md` yet, rather than proceeding
 silently.
 
-### Accepts
+### WAKES-ON
 
-- **`feasibility-record`** — to react to a verdict on a prior hypothesis.
+Per contract §3's product row: product wakes on a qa or review outcome
+whose content questions the standing acceptance criteria. WAKES-ON is a
+trigger condition, not an accept/refuse gate — reading a kind and being
+woken by it are different questions (see the next subsection).
 
-Refuses: `build-proposal`, `qa-state`, `review-record`, `ops-state`.
+### READ / DEPENDS-ON / NEVER-OVERWRITE
+
+Per contract §4's three questions, at product's grain:
+
+- **READ: broad, unconditional.** `product` may read any board record for
+  context, including `build-proposal`, `qa-record`, `review-record`, and
+  `ops-record` — none of these are refused reading, unlike v1's Refuses
+  list.
+- **DEPENDS-ON: narrow.** Product depends on `feasibility-record` (a
+  verdict causing it to react) — contract §4's own product bullet,
+  verbatim. This is the one dependency contract §4 explicitly assigns
+  product.
+- **NEVER-OVERWRITE.** Product writes only: `docs/proposals/<date>-<slug>.md`
+  (`kind: hypothesis`), `docs/reports/records/<subject>/product.md`
+  (`kind: product-record`), `product/one-pager.md` (`kind: one-pager`),
+  `product/opportunity-tree.md` (`kind: opportunity-tree`) — contract
+  §11's product row, verbatim. `docs/proposals/` stays shared between
+  product and coding, disambiguated by filename tag: coding's
+  `build-proposal` filenames carry `-build-` (`<date>-build-<slug>.md`),
+  distinct on its face from product's `<date>-<slug>.md`. **Callout:**
+  any glob/regex product's tooling (including a gate check) uses to
+  recognize "is this file mine" under `docs/proposals/` must exclude the
+  `-build-` tag, not just match on directory — matching on directory
+  alone would wrongly claim coding's files too.
 
 ### Where upstream lives
 
@@ -68,42 +94,71 @@ Refuses: `build-proposal`, `qa-state`, `review-record`, `ops-state`.
 The user hands over only a pointer ("it's here"); this path is what lets
 `product` resolve that pointer on its own, without asking.
 
-### Produces
+### Blackboard record shapes
 
-- **`hypothesis`** at `docs/proposals/<date>-<slug>.md`. Required fields:
-  role status (`idle,scoping,researching,hypothesis-registered,measuring,decided`),
-  plus the common header (`kind`, `subject`, `produced_by`, `upstream`,
-  `handoff_status: provisional | final`). `product` owns the
-  `<date>-<slug>.md` filename form in `docs/proposals/`; `coding` owns
-  `<date>-build-<slug>.md` in the same directory. The two forms can never
-  collide on the same date, because coding's carries the `build-` tag and
-  product's structurally cannot.
-- **`one-pager`** at `product/one-pager.md`. Required fields (all
-  non-empty): Background/Context, Problem Statement, Candidate Hypotheses,
-  Known Risks, Goals/Success Metrics — plus the common header.
-- **`opportunity-tree`** at `product/opportunity-tree.md`. A continuous
-  interview log, no fixed state field — plus the common header.
+Per contract §2's table and §7, `product` owns four kinds:
+
+- **`hypothesis`** at `docs/proposals/<date>-<slug>.md`. `loop_state`
+  vocabulary: `idle,scoping,researching,hypothesis-registered,measuring,decided`.
+  Required fields beyond the common header: Background/Context, Problem
+  Statement, Candidate Hypotheses, Known Risks, Goals/Success Metrics.
+  `product` owns the `<date>-<slug>.md` filename form in
+  `docs/proposals/`; `coding` owns `<date>-build-<slug>.md` in the same
+  directory. The two forms can never collide on the same date, because
+  coding's carries the `build-` tag and product's structurally cannot.
+- **`product-record`** at `docs/reports/records/<subject>/product.md`.
+  Same `loop_state` vocabulary as `hypothesis`. Required fields: a
+  pointer to the governing `hypothesis`, plus running acceptance-criteria
+  notes.
+- **`one-pager`** at `product/one-pager.md`. Standing doc, `loop_state:
+  n/a`. Required fields (all non-empty): Background/Context, Problem
+  Statement, Candidate Hypotheses, Known Risks, Goals/Success Metrics —
+  plus the common header.
+- **`opportunity-tree`** at `product/opportunity-tree.md`. Standing doc,
+  `loop_state: n/a`. A continuous interview log, no other required
+  fields.
+
+### Finding participation
+
+Per contract §5: `product` may both produce and receive `finding` blocks
+(generalized in v2 from v1's review-only findings). When `product` closes
+out a `finding` addressed to it, `product.md` (the `product-record`) must
+carry a `finding-response` entry with all three required parts: the
+finding reference (record path + finding identifier), the action taken or
+decline reason, and — when applicable — proof of the fix. An entry
+missing any of the three parts does not close the finding.
+
+### Loop termination
+
+Per contract §6: a wake is consumed only by writing the resulting record
+entry — a `loop_state` change, a new `finding`, a `finding-response`, or
+equivalent. An unchanged board wakes no one.
+
+### Minting `subject` (contract §9)
+
+Any role may open a chain, not only `product` — "not only product...
+deterministic regardless of which role does it." Before minting a new
+`subject`, search `docs/reports/records/*/` and `docs/proposals/*` for an
+existing `subject` describing the same work and adopt it verbatim if
+found, rather than assuming `product` is always the chain-opener.
 
 ### Stops
 
-- **Upstream stale at role entry.** Before acting on a handed-over
-  `feasibility-record`, `product` compares the recorded `sha` in its
-  `upstream` entry against the current commit that touched that path. If
-  they differ, `product` stops before doing further work and asks the user
-  whether to proceed on the recorded version or re-confirm against the
-  current one — it does not decide this itself.
+- **Upstream stale at role entry — contract §12.** Before acting on a
+  handed-over `feasibility-record`, `product` compares the recorded `sha`
+  in its `upstream` entry against the current commit that touched that
+  path. On first read of an `upstream` entry, this always prompts the
+  user once. On a later re-entry, if the current sha matches the recorded
+  `acknowledged_sha`, it does not re-prompt. A sha matching neither `sha`
+  nor `acknowledged_sha` re-fires the full prompt — the gate does not
+  decide "proceed" or "re-confirm" itself, it asks.
 - **A record already exists at a path `product` does not own.** If
   `product`, in the course of its work, finds an existing record already
-  present under `docs/reports/records/` or at a `docs/proposals/` filename
-  it does not own (including a `<date>-build-<slug>.md` slot tagged as
-  coding's), it refuses to write there and reports the conflict — the
-  path, and whose territory it falls in — to the user. It never overwrites
-  or merges into it silently.
-- **Input carries `handoff_status: provisional`.** `product` may read a
-  provisional `feasibility-record` to plan or draft against, but must not
-  treat it as final input to an accept/refuse decision or as the baseline
-  recorded in its own `upstream` entry for the staleness check, until the
-  artifact's `handoff_status` reads `final`.
+  present under `docs/reports/records/` or at a `docs/proposals/`
+  filename it does not own (including a `<date>-build-<slug>.md` slot
+  tagged as coding's), it refuses to write there and reports the
+  conflict — the path, and whose territory it falls in — to the user. It
+  never overwrites or merges into it silently.
 
 ## Install
 
