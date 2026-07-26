@@ -414,6 +414,128 @@ else
   fail "(s) simulated missing python3 was NOT denied properly (exit $code_s): $GATE_OUT"
 fi
 
+# --- scope-record-gate.sh Bash-bypass fix
+# (docs/proposals/2026-07-26-scope-record-gate-bash-bypass.md): a Bash-authored
+# write that lands the front record at loop_state: scope-approved used to
+# reach zero token-checking hook (hooks.json only wired
+# Write|Edit|MultiEdit|NotebookEdit to scope-record-gate.sh). hooks.json now
+# also routes Bash there, and the gate judges a Bash write by its resolved
+# target and literal resulting content, same as a Write call.
+scope_gate="$hook_dir/scope-record-gate.sh"
+token_hook="$hook_dir/scope-approval-token.sh"
+
+new_scope_root() {
+  local d; d="$(mktemp -d)"
+  ( cd "$d" && git init -q ) >/dev/null 2>&1
+  mkdir -p "$d/docs/specs"
+  cp "$contract_src" "$d/docs/specs/role-handoff-contract.md"
+  echo "$d"
+}
+
+json_write_generic() { # <path> <content>
+  python3 -c 'import json,sys;print(json.dumps({"tool_name":"Write","tool_input":{"file_path":sys.argv[1],"content":sys.argv[2]}}))' "$1" "$2"
+}
+json_bash_generic() { # <command>
+  python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$1"
+}
+
+# --- (n1) Bash-authored, tokenless scope-approved transition -> REFUSED ---
+root_n="$(new_scope_root)"
+subj_n="bashbypass-subj"
+mkdir -p "$root_n/docs/reports/records/$subj_n"
+printf -- '---\nkind: product-record\nsubject: %s\nloop_state: scope-proposed\n---\n' "$subj_n" > "$root_n/docs/reports/records/$subj_n/product.md"
+bash_approve_cmd="cat > docs/reports/records/$subj_n/product.md <<'EOF'
+---
+kind: product-record
+subject: $subj_n
+loop_state: scope-approved
+---
+scope approved via Bash, no token
+EOF"
+payload_n1="$(json_bash_generic "$bash_approve_cmd")"
+out_n1="$(cd "$root_n" && printf '%s' "$payload_n1" | CLAUDE_PROJECT_DIR="$root_n" "$scope_gate" 2>&1)"
+code_n1=$?
+if [ "$code_n1" -ne 0 ]; then
+  pass "(n1) Bash-authored tokenless scope-approved transition is refused (exit $code_n1)"
+else
+  fail "(n1) Bash-authored tokenless scope-approved transition was ALLOWED (exit 0): $out_n1"
+fi
+# and confirm the on-disk record was NOT actually advanced by re-checking the
+# gate is what would have run pre-write (hooks fire before the tool acts) —
+# the record on disk must still read scope-proposed since the gate denied.
+if grep -q '^loop_state: scope-proposed$' "$root_n/docs/reports/records/$subj_n/product.md"; then
+  pass "(n1b) front record on disk is still scope-proposed after the refused Bash write"
+else
+  fail "(n1b) front record on disk unexpectedly changed despite the refusal"
+fi
+
+# --- (n2) same transition, but with a valid human-placed token -> PASS ---
+mint_prompt="$(python3 -c 'import json,sys;print(json.dumps({"prompt":"I approve the scope for subject "+sys.argv[1]+"; scope looks good."}))' "$subj_n")"
+printf '%s' "$mint_prompt" | CLAUDE_PROJECT_DIR="$root_n" "$token_hook" >/dev/null 2>&1
+if [ -f "$root_n/docs/reports/records/$subj_n/tokens/$subj_n.scope-approved.token" ]; then
+  pass "(n2a) scope-approval-token minted a token from the human's approval turn"
+else
+  fail "(n2a) scope-approval-token did NOT mint a token"
+fi
+out_n2="$(cd "$root_n" && printf '%s' "$payload_n1" | CLAUDE_PROJECT_DIR="$root_n" "$scope_gate" 2>&1)"
+code_n2=$?
+if [ "$code_n2" -eq 0 ]; then
+  pass "(n2b) Bash-authored scope-approved transition with a valid token is allowed (exit 0)"
+else
+  fail "(n2b) Bash-authored scope-approved transition with a valid token was DENIED (exit $code_n2): $out_n2"
+fi
+if [ ! -f "$root_n/docs/reports/records/$subj_n/tokens/$subj_n.scope-approved.token" ]; then
+  pass "(n2c) the token was consumed by the allowed Bash-authored transition"
+else
+  fail "(n2c) the token was NOT consumed"
+fi
+rm -rf "$root_n"
+
+# --- (n3) normal Write-path still behaves: tokenless Write -> refused, ----
+#     tokened Write -> allowed (regression guard for the pre-existing path)
+root_n3="$(new_scope_root)"
+subj_n3="writepath-subj"
+mkdir -p "$root_n3/docs/reports/records/$subj_n3"
+printf -- '---\nkind: product-record\nsubject: %s\nloop_state: scope-proposed\n---\n' "$subj_n3" > "$root_n3/docs/reports/records/$subj_n3/product.md"
+approve_content="---
+kind: product-record
+subject: $subj_n3
+loop_state: scope-approved
+---
+scope approved via Write"
+payload_n3="$(json_write_generic "$root_n3/docs/reports/records/$subj_n3/product.md" "$approve_content")"
+out_n3="$(printf '%s' "$payload_n3" | CLAUDE_PROJECT_DIR="$root_n3" "$scope_gate" 2>&1)"
+code_n3=$?
+if [ "$code_n3" -ne 0 ]; then
+  pass "(n3a) normal Write-path tokenless scope-approved transition is still refused (exit $code_n3)"
+else
+  fail "(n3a) normal Write-path tokenless scope-approved transition was ALLOWED (exit 0): $out_n3"
+fi
+mint_prompt_n3="$(python3 -c 'import json,sys;print(json.dumps({"prompt":"I approve the scope for subject "+sys.argv[1]+"; scope looks good."}))' "$subj_n3")"
+printf '%s' "$mint_prompt_n3" | CLAUDE_PROJECT_DIR="$root_n3" "$token_hook" >/dev/null 2>&1
+out_n3b="$(printf '%s' "$payload_n3" | CLAUDE_PROJECT_DIR="$root_n3" "$scope_gate" 2>&1)"
+code_n3b=$?
+if [ "$code_n3b" -eq 0 ]; then
+  pass "(n3b) normal Write-path scope-approved transition with a valid token is still allowed (exit 0)"
+else
+  fail "(n3b) normal Write-path scope-approved transition with a valid token was DENIED (exit $code_n3b): $out_n3b"
+fi
+rm -rf "$root_n3"
+
+# --- (n4) Bash write unrelated to the front record path -> left alone -----
+root_n4="$(new_scope_root)"
+bash_unrelated="echo hi > /tmp/scope-record-gate-unrelated-scratch.txt"
+payload_n4="$(json_bash_generic "$bash_unrelated")"
+out_n4="$(printf '%s' "$payload_n4" | CLAUDE_PROJECT_DIR="$root_n4" "$scope_gate" 2>&1)"
+code_n4=$?
+rm -f /tmp/scope-record-gate-unrelated-scratch.txt
+if [ "$code_n4" -eq 0 ]; then
+  pass "(n4) Bash write unrelated to the front record tree is left ungated (allowed)"
+else
+  fail "(n4) Bash write unrelated to the front record tree was DENIED (exit $code_n4): $out_n4"
+fi
+rm -rf "$root_n4"
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]
