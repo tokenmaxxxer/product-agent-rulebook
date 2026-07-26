@@ -777,6 +777,90 @@ else
 fi
 rm -rf "$root_u4"
 
+# === read-only-tool passthrough regression fix
+# (docs/proposals/2026-07-26-scope-record-gate-deny-on-ambiguity.md): the
+# catch-all `.*` matcher (see (u0) above) routes every tool, including
+# read-only ones, into scope-record-gate.sh. The tool-agnostic default-deny
+# then refused Read/Grep/Glob/LS on the front record because their payload
+# has no content field — wrongly blocking reads. These tools must PASS
+# untouched regardless of payload shape or on-disk state.
+
+# --- (v1) Read of the front-record path PASSES -----------------------------
+root_v1="$(new_scope_root)"
+subj_v1="readonly-read"
+mkdir -p "$root_v1/docs/reports/records/$subj_v1"
+proposed_body "$subj_v1" > "$root_v1/docs/reports/records/$subj_v1/product.md"
+payload_v1="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"Read","tool_input":{"file_path":sys.argv[1]}}))' "docs/reports/records/$subj_v1/product.md")"
+out_v1="$(cd "$root_v1" && printf '%s' "$payload_v1" | CLAUDE_PROJECT_DIR="$root_v1" "$scope_gate" 2>&1)"
+code_v1=$?
+if [ "$code_v1" -eq 0 ]; then
+  pass "(v1) Read of the front-record path passes (exit 0)"
+else
+  fail "(v1) Read of the front-record path was DENIED (exit $code_v1): $out_v1"
+fi
+rm -rf "$root_v1"
+
+# --- (v2) Grep over the front-record tree PASSES ----------------------------
+root_v2="$(new_scope_root)"
+subj_v2="readonly-grep"
+mkdir -p "$root_v2/docs/reports/records/$subj_v2"
+proposed_body "$subj_v2" > "$root_v2/docs/reports/records/$subj_v2/product.md"
+payload_v2="$(python3 -c 'import json;print(json.dumps({"tool_name":"Grep","tool_input":{"pattern":"loop_state","path":"docs/reports/records"}}))')"
+out_v2="$(cd "$root_v2" && printf '%s' "$payload_v2" | CLAUDE_PROJECT_DIR="$root_v2" "$scope_gate" 2>&1)"
+code_v2=$?
+if [ "$code_v2" -eq 0 ]; then
+  pass "(v2) Grep over the front-record tree passes (exit 0)"
+else
+  fail "(v2) Grep over the front-record tree was DENIED (exit $code_v2): $out_v2"
+fi
+rm -rf "$root_v2"
+
+# --- (v3) Glob over the front-record tree PASSES ----------------------------
+root_v3="$(new_scope_root)"
+payload_v3="$(python3 -c 'import json;print(json.dumps({"tool_name":"Glob","tool_input":{"pattern":"docs/reports/records/**/product.md"}}))')"
+out_v3="$(cd "$root_v3" && printf '%s' "$payload_v3" | CLAUDE_PROJECT_DIR="$root_v3" "$scope_gate" 2>&1)"
+code_v3=$?
+if [ "$code_v3" -eq 0 ]; then
+  pass "(v3) Glob over the front-record tree passes (exit 0)"
+else
+  fail "(v3) Glob over the front-record tree was DENIED (exit $code_v3): $out_v3"
+fi
+rm -rf "$root_v3"
+
+# --- (v4) previously-refused write bypasses STILL refuse (guard against ----
+#     over-widening the passthrough to write-shaped tools) ------------------
+root_v4="$(new_scope_root)"
+subj_v4="readonly-guard-varheredoc"
+mkdir -p "$root_v4/docs/reports/records/$subj_v4"
+proposed_body "$subj_v4" > "$root_v4/docs/reports/records/$subj_v4/product.md"
+bash_v4_cmd="STATE=scope-approved; cat > docs/reports/records/$subj_v4/product.md <<EOF
+---
+kind: product-record
+subject: $subj_v4
+loop_state: \$STATE
+---
+EOF"
+payload_v4="$(json_bash_generic "$bash_v4_cmd")"
+out_v4="$(cd "$root_v4" && printf '%s' "$payload_v4" | CLAUDE_PROJECT_DIR="$root_v4" "$scope_gate" 2>&1)"
+code_v4=$?
+if [ "$code_v4" -ne 0 ]; then
+  pass "(v4a) \$VAR-heredoc bypass is still refused after the read-only passthrough fix (exit $code_v4)"
+else
+  fail "(v4a) \$VAR-heredoc bypass was ALLOWED after the read-only passthrough fix (exit 0): $out_v4"
+fi
+subj_v4b="readonly-guard-unknowntool"
+mkdir -p "$root_v4/docs/reports/records/$subj_v4b"
+proposed_body "$subj_v4b" > "$root_v4/docs/reports/records/$subj_v4b/product.md"
+payload_v4b="$(python3 -c 'import json,sys;print(json.dumps({"tool_name":"apply_patch","tool_input":{"file_path":sys.argv[1],"content":sys.argv[2]}}))' "docs/reports/records/$subj_v4b/product.md" "$(approved_body "$subj_v4b")")"
+out_v4b="$(cd "$root_v4" && printf '%s' "$payload_v4b" | CLAUDE_PROJECT_DIR="$root_v4" "$scope_gate" 2>&1)"
+code_v4b=$?
+if [ "$code_v4b" -ne 0 ]; then
+  pass "(v4b) unknown-named WRITE tool, tokenless scope-approved, is still refused (exit $code_v4b)"
+else
+  fail "(v4b) unknown-named WRITE tool, tokenless scope-approved, was ALLOWED (exit 0): $out_v4b"
+fi
+rm -rf "$root_v4"
+
 echo
 echo "== $pass_count passed, $fail_count failed =="
 [ "$fail_count" -eq 0 ]
