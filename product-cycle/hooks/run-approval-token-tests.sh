@@ -30,7 +30,12 @@ check() {
 import json, sys
 print(json.dumps({"prompt": sys.argv[1], "cwd": sys.argv[2]}))' "$prompt" "$td")" \
     | CLAUDE_PROJECT_DIR="$td" /bin/bash "$HOOK" >/dev/null 2>&1
-  if find "$td" -name '*.token' -type f | grep -q .; then got=mint; else got=reject; fi
+  tok="$(find "$td" -name '*.token' -type f | head -1)"
+  if [ -n "$tok" ]; then got="mint:$(basename "$tok" .scope-approved.token)"; else got=reject; fi
+  # A bare `mint` expectation accepts any subject; `mint:<subject>` pins which
+  # one. Filenames carry the subject, and binding the token to the WRONG
+  # subject is a distinct defect from minting when it should not have.
+  [ "$want" = mint ] && case "$got" in mint:*) got=mint ;; esac
   rm -rf "$td"
   if [ "$got" = "$want" ]; then
     pass=$((pass + 1)); printf 'ok     %-22s %s\n' "$name" "$got"
@@ -49,6 +54,24 @@ check reject "no-subject"       "I approve the scope."
 check mint   "approval-en"      "I approve the scope for subject $SUB."
 check mint   "approval-ko"      "subject $SUB 의 scope 를 승인한다."
 check mint   "approval-ko-범위" "subject $SUB 의 범위를 승인한다."
+
+# Added 2026-07-27 after the first fix leaked. The negation guard it shipped was
+# a keyword list scanned in a character window around the match, and it carried
+# `\brefus\b`, which cannot match "refuse" — the word boundaries make it look
+# for the literal word `refus`. `won't`, `will not` and `should not` were absent
+# outright. Each of these minted a valid, consumable token.
+check reject "refuse-verb"      "subject $SUB: I refuse to approve the scope."
+check reject "wont-contraction" "For subject $SUB I won't approve the scope."
+check reject "should-not"       "subject $SUB: you should not approve the scope on my behalf."
+check reject "question-anyone"  "subject $SUB - did anyone approve the scope yet?"
+check reject "third-party-quote" "subject $SUB: the PR comment says QA approved the scope last week."
+check reject "will-not"         "For subject $SUB I will not approve the scope."
+check reject "wouldnt"          "subject $SUB: I wouldn't approve the scope as written."
+
+# The subject and the approval must come from the SAME sentence. Otherwise a
+# turn discussing two subjects mints for whichever one is named first — here,
+# the one the human said stays put.
+check "mint:$SUB" "same-sentence-subject" "subject beta is blocked and stays where it is. Separately, I approve the scope for subject $SUB."
 
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
