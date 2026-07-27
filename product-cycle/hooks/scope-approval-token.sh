@@ -44,61 +44,76 @@ prompt = event.get("prompt")
 if not isinstance(prompt, str) or not prompt.strip():
     bail()
 
-# --- identify the subject this turn concerns (required, explicit) ------
-sm = re.search(r'(?i)\bsubject[\s:]+([A-Za-z0-9][A-Za-z0-9_-]{0,127})', prompt)
-if not sm:
-    bail()
-subject = sm.group(1)
-if not re.match(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$', subject):
-    bail()
+# --- the approving sentence, and the subject named inside it -----------
+#
+# The subject and the approval are taken from ONE sentence. Two independent
+# searches over the whole prompt is what the previous version did, and it
+# failed in both directions (measured 2026-07-27):
+#
+#   "subject beta is blocked and stays where it is. Separately, I approve the
+#    scope for subject alpha."
+#      -> minted a token for BETA, the subject the human said stays put.
+#
+#   "subject alpha: I refuse to approve the scope."
+#   "For subject alpha I won't approve the scope."
+#   "subject alpha - did anyone approve the scope yet?"
+#   "subject alpha: the PR comment says QA approved the scope last week."
+#      -> all four minted a valid, consumable approval token.
+#
+# The last four are why this is sentence-scoped rather than a keyword list
+# with a character window. That window WAS the previous attempt, and it
+# carried `\brefus\b` — which cannot match "refuse" at all, since the word
+# boundaries make it look for the literal word `refus` — while `won't`,
+# `will not`, `should not` and `wouldn't` were simply absent. A denylist of
+# negations is the wrong shape for an authorization gate. The sentence either
+# reads as an assertion of approval or it does not count.
 
-# --- unambiguous scope-approval detection ------------------------------
-# Require an explicit approval keyword tied to scope, not bare assent.
-#
-# `\bscope-?approved\b` used to be a third alternative here, and it was a hole
-# straight through §19: it matches the NAME OF THE STATE, so any sentence that
-# merely mentions the transition minted a token for it. Measured 2026-07-27,
-# all three of these produced a valid, consumable token for a real subject:
-#
-#   "subject <id> 의 scope-approved 게이트에 닿으면 멈춰라. 대신 승인하지 마라."
-#   "§19 는 subject <id> 의 loop_state 를 scope-approved 로 올리는 …"   (quoting
-#                                                                       the contract)
-#   "subject <id> 의 scope 를 approve 한다."                            (the real thing)
-#
-# The first is a REFUSAL to approve, and the token it minted carried that
-# refusal verbatim in its own `phrase:` field. The second is the contract's own
-# text. A gate the contract calls "human-owned, never self-certified" was
-# trippable by an agent explaining that it must not approve.
-#
-# Naming a transition is not performing it. Approval now requires an approval
-# VERB bound to the scope — including a Korean form, so that dropping the
-# state-name alternative does not leave a Korean-speaking human with no way to
-# approve at all.
-#
-# The state name is blanked out first. Dropping the third alternative was not
-# enough on its own: `\bscope\b[^.\n]*\bapproved\b` also spans the literal
-# `scope-approved`, because the hyphen is a word boundary. So "이 subject 는
-# 아직 scope-approved 가 아니다" — a statement that it is NOT approved — still
-# minted a token. `scope-approved` is an identifier; it is never a speech act.
-speech = re.sub(r'(?i)\bscope[-_ ]?approved\b', ' <state> ', prompt)
-approves = re.search(
-    r'(?i)\b(approve|approved|approving)\b[^.\n]*\bscope\b'
-    r'|\bscope\b[^.\n]*\b(approved|is approved|looks good to approve|approve)\b'
-    r'|(?:scope|스코프|범위)[^.\n]*승인(?!\s*(?:하지|말|안))',
-    speech)
-if not approves:
+# The state name is an identifier, never a speech act. Blank it first, or
+# `\bscope\b[^.\n]*\bapproved\b` spans the literal `scope-approved` (the
+# hyphen is a word boundary) and "this subject is not yet scope-approved"
+# reads as an approval.
+speech = re.sub(r"(?i)\bscope[-_ ]?approved\b", " <state> ", prompt)
+speech = speech.replace("’", "'")
+
+# A sentence disqualifies itself by being a question, a hedge, a negation, or
+# a report of someone else's words. Verb suffixes are open (`refus\w*`) so
+# refuse/refused/refusal all match — the closed form matched none of them.
+DISQUALIFY = re.compile(
+    r"(?i)\?\s*$"
+    r"|\b(not|never|cannot|shall not|will not|would not|should not|must not"
+    r"|can't|won't|wont|shan't|shouldn't|wouldn't|couldn't|didn't|doesn't"
+    r"|don't|isn't|aren't|wasn't|weren't|hasn't|haven't"
+    r"|refus\w*|declin\w*|without|instead of|unsure|maybe|might"
+    r"|i think|i wonder|did anyone|has anyone|do you|should we|shall we)\b"
+    r"|\b(says?|said|according to|comment|quoted?|per the)\b"
+    r"|하지\s*마|하지\s*말|말고|말라|않|없이|금지|아니|못\s*|"
+    r"확실치|확실하지|모르겠|인가요|일까요|라고\s*(?:한다|했다|합니다)")
+
+APPROVES = re.compile(
+    r"(?i)\b(approve|approved|approving)\b[^.\n]*\bscope\b"
+    r"|\bscope\b[^.\n]*\b(approve|approved)\b"
+    r"|(?:scope|스코프|범위)[^.\n]*승인")
+SUBJECT = re.compile(r"(?i)\bsubject[\s:]+([A-Za-z0-9][A-Za-z0-9_-]{0,127})")
+
+subject = None
+for sentence in re.split(r"(?<=[.!?\n])\s+", speech):
+    s = sentence.strip()
+    if not s or DISQUALIFY.search(s) or not APPROVES.search(s):
+        continue
+    sub = SUBJECT.search(s)
+    if not sub:
+        # An approval that names no subject in its own sentence names nothing.
+        # Which subject it meant is not this hook's guess to make.
+        continue
+    subject = sub.group(1)
+    break
+
+if subject is None:
     bail()
-# An approval verb inside a negation is not an approval. The window covers the
-# clause before the match, which is where English negation sits ("do not
-# approve the scope"); Korean negation trails the verb and is handled by the
-# lookahead above.
-NEGATED = re.compile(r'(?i)\b(do not|don\'?t|never|must not|cannot|can\'?t|'
-                     r'without|refus|decline|instead of)\b'
-                     r'|하지\s*마|하지\s*말|말고|말라|않는다|없이|금지')
-if NEGATED.search(speech[max(0, approves.start() - 60):approves.end() + 30]):
+if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$", subject):
     bail()
 # Reject bare assent even if a keyword coincidentally appears.
-if re.match(r'^\s*(ok|okay|sure|sounds good|yep|yes|k|fine)\s*[.!]?\s*$', prompt, re.I):
+if re.match(r"^\s*(ok|okay|sure|sounds good|yep|yes|k|fine)\s*[.!]?\s*$", prompt, re.I):
     bail()
 
 # --- resolve project root (no root -> nothing to do) -------------------
