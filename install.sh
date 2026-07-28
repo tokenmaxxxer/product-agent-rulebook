@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-shot installer for the tokenmaxxxer product-role stack.
 # Registers the tokenmaxxxer-product marketplace and installs the
-# product-agent-env bundle (which pulls product-cycle in as a dependency),
+# product bundle (which pulls product in as a dependency),
 # then refreshes the marketplace once.
 #
 # Installs for your account only (user scope). Uses a real `claude` CLI
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 MARKET="tokenmaxxxer-product"
-BUNDLE="product-agent-env"
+BUNDLE="product"
 GITHUB_REPO="tokenmaxxxer/product-agent-rulebook"
 
 usage() {
@@ -136,12 +136,12 @@ if [ -n "$CLI" ] && [ -x "$CLI" ]; then
   "$CLI" plugin marketplace update "$MARKET" >/dev/null 2>&1 || true
 
   install_failed=""
-  for plugin in product-cycle; do
+  for plugin in product; do
     "$CLI" plugin install "$plugin@$MARKET" --scope user || install_failed="$install_failed $plugin"
   done
   "$CLI" plugin install "$BUNDLE@$MARKET" --scope user || install_failed="$install_failed $BUNDLE"
 
-  for plugin in product-cycle; do
+  for plugin in product; do
     "$CLI" plugin update "$plugin@$MARKET" || true
   done
   "$CLI" plugin update "$BUNDLE@$MARKET" || true
@@ -169,5 +169,5 @@ cat <<'MSG'
       auto-update, so future stack additions arrive automatically. There is
       no CLI/config switch for this toggle; it is a one-time interactive step.
     - without auto-update, refresh manually anytime:
-      claude plugin update product-agent-env@tokenmaxxxer-product
+      claude plugin update product@tokenmaxxxer-product
 MSG

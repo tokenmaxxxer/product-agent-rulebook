@@ -7,7 +7,7 @@ __fc(){ rc=$?; if [ "$rc" != 0 ] && [ "$rc" != 2 ]; then echo "product-cycle: fa
 trap __fc EXIT
 # PreToolUse hook (Write|Edit|MultiEdit|NotebookEdit): enforces contract §20
 # (per-role record minimum content) on writes to product's OWN record path
-# docs/reports/records/<subject>/product.md.
+# docs/issue-<n>/reports/product.md.
 #
 # Peer to state-gate.sh: reads the SAME resulting content state-gate.sh
 # computes for its transition check, validating §20's minimum sections on
@@ -136,7 +136,7 @@ rel = repo_rel(target)
 if rel is None:
     allow()
 
-PRODUCT_RECORD_RE = re.compile(r'^docs/reports/records/([^/]+)/product\.md$')
+PRODUCT_RECORD_RE = re.compile(r'^docs/issue-[0-9]+/reports/product\.md$')
 m = PRODUCT_RECORD_RE.match(rel)
 if not m:
     allow()
