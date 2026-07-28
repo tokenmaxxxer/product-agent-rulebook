@@ -5,14 +5,9 @@
   },
   "plugins": [
     {
-      "name": "product-cycle",
-      "source": "./product-cycle",
-      "description": "Product-discovery state machine: idle -> scoping -> researching -> hypothesis-registered -> measuring -> decided. Registers the metric, threshold, and decision rule before any data is collected; the gated hypothesis-registered -> measuring transition requires both the registered package and an approval token minted from the user's own turn; the threshold is frozen once measuring starts; decided applies the registered rule mechanically."
-    },
-    {
-      "name": "product-agent-env",
-      "source": "./product-agent-env",
-      "description": "One-install environment bundle: installs product-cycle via dependency."
+      "name": "product",
+      "source": "./product",
+      "description": "The product role on contract v3: decides what to build \u2014 value and business-viability risk. Pre-registered hypothesis discipline (named metric, numeric threshold, decision rule fixed before data; guardrails non-empty), one-pager problem-without-solution lens, assumption-mapped research, and a verdict that is the mechanical application of the registered rule. Ships skills: hypothesis-testing, assumption-mapping, one-pager, opportunity-solution-tree, guardrail-metrics."
     }
   ]
 }

@@ -1,8 +1,0 @@
-{
-  "name": "product-cycle",
-  "version": "0.1.0",
-  "description": "Product-discovery state machine, run as one hypothesis at a time: idle -> scoping -> researching -> hypothesis-registered -> measuring -> decided. The metric, threshold, and decision rule are pre-registered before data collection; hypothesis-registered -> measuring is refused unless all three fields are filled AND an approval token minted from the user's own turn (capture-approval.sh) is present; once measuring starts, edits to the threshold field are refused; decided is reached only by mechanically applying the registered rule.",
-  "author": {
-    "name": "Jung Jiwon & Lee Jongkwan"
-  }
-}
