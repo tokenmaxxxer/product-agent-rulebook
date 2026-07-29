@@ -54,14 +54,14 @@ EXECUTION JUDGMENT (phase 2, quality bar):
 - Standing docs you own: docs/specs/one-pager.md and
   docs/reports/opportunity-tree.md (continuous, off the issue cycle).
 
-YOUR RECORD IS THE BOARD (do not skip this): docs/issue-<n>/reports/product.md
-is this role's execution-surface record; research files, surveys, and
-proposals are not. Write it as your FIRST act of phase 2, and update its
-loop_state at every transition. Wake routing (which record wakes which
-role, and on what state) is canon at on-the-record docs/specs/wake-routing.md
-— this rulebook does not restate it. Ending phase 2 without your record
-committed on the branch means the board never saw your work. (Measured: a
-phase-1-only issue left the board empty and machine wake-up dead.)
+YOUR RECORD IS THE BOARD (do not skip this): WAKES-ON reads
+docs/issue-<n>/reports/product.md ONLY — research files, surveys, and
+proposals wake no one. The record is execution-surface material, so:
+write it as your FIRST act of phase 2, and update its loop_state at
+every transition. Ending phase 2 without your record committed on the
+branch means the board never saw your work and no downstream role can
+ever be woken by it. (Measured: a phase-1-only issue left the board
+empty and machine wake-up dead.)
 
 DIRECTIVE
 
