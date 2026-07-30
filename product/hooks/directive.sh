@@ -60,7 +60,9 @@ are not. It carries a `kind` field and a `loop_state` field using this
 role's defined vocabulary, plus whatever required fields the record
 format specifies. Write it as your FIRST act of phase 2, update its
 loop_state at every transition, and end phase 2 only once it is
-committed on the branch.
+committed on the branch. Ending phase 2 without your record committed
+on the branch means the record was never written. (Measured: a
+phase-1-only issue left the record empty.)
 
 DIRECTIVE
 
