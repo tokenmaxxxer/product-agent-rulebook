@@ -227,7 +227,7 @@ if not loop_m:
 else:
     loop_state = loop_m.group(1).strip()
 
-TERMINAL = {"decided", "scope-approved"}
+TERMINAL = {"decided", "scope-proposed"}
 if loop_state is not None and loop_state not in TERMINAL:
     if not has_section(new_text, "next step", "next-steps", "backlog", "todo"):
         missing.append("a next-steps backlog (loop_state '%s' leaves work open, per §20)" % loop_state)

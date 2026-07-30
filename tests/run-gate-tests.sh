@@ -35,6 +35,12 @@ verdict: Incorrect'
 run deny  open-no-backlog record-fields-gate.sh "$REC" 'loop_state: auditing
 ## What was done
 x — upstream basis abc1234'
+run allow record-scope-proposed record-fields-gate.sh "$REC" 'loop_state: scope-proposed
+hypothesis: docs/issue-7/proposals/2026-07-28-h.md
+## What was done
+Raised the front record to scope-proposed for the pre-approval gate.
+## Why
+Scope is frozen and ready for human accept; no further open work.'
 run allow foreign-path    record-fields-gate.sh "docs/issue-7/reports/verify.md" "x"
 
 trailergate() { # want name stagepath commitcmd

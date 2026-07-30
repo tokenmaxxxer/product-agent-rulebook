@@ -40,10 +40,12 @@ application of that rule, never a fresh judgment once the numbers are in.
 ## Record vocabulary
 
 `loop_state`: `idle, scoping, researching, hypothesis-registered,
-measuring, decided` plus `scope-proposed, scope-approved` when this is the
-subject's front record (terminal: `decided` / `scope-approved`). Standing
-docs owned continuously, off the issue cycle: `docs/specs/one-pager.md`,
-`docs/reports/opportunity-tree.md`.
+measuring, decided` plus `scope-proposed` when this is the subject's
+front record (terminal: `decided` / `scope-proposed`). `scope-approved`
+is the human-only accept state the external pre-approval gate raises a
+`scope-proposed` record to — never written by this role, never part of
+this vocabulary. Standing docs owned continuously, off the issue cycle:
+`docs/specs/one-pager.md`, `docs/reports/opportunity-tree.md`.
 
 ## Install
 
