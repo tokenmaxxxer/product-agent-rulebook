@@ -59,5 +59,18 @@ trailergate allow commit-with-trailer "$REC" 'git commit -m "update
 Subject: issue-7"'
 trailergate allow commit-non-issue    "src/app.py" 'git commit -m "x"'
 
-printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
-[ "$fail" -eq 0 ]
+printf '\n== %d passed, %d failed (product/hooks legacy checks) ==\n' "$pass" "$fail"
+
+# Each product-* methodology plugin owns its own gate test file, run as its
+# own subprocess suite (proposal section 6: this dispatch, not a new one).
+plugin_fail=0
+for suite in product-one-pager product-opportunity-solution-tree \
+             product-assumption-mapping product-hypothesis-testing \
+             product-guardrail-metrics; do
+  echo; echo "-- $suite --"
+  bash "$HERE/$suite-gate-tests.sh" || plugin_fail=1
+done
+
+overall_fail=$fail
+[ "$plugin_fail" -eq 0 ] || overall_fail=$((overall_fail + 1))
+exit "$overall_fail"

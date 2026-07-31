@@ -1,0 +1,7 @@
+{
+  "name": "product-opportunity-solution-tree",
+  "description": "The opportunity-solution-tree (OST) methodology facet of the product role: places the current-state survey's problem on the relevant OST branch (outcome / opportunity / candidate solutions / discriminating assumption test) in OST's own four-layer vocabulary, and requires the phase-2 record to state which branch was pruned (kill) or promoted (go/pivot) in that same vocabulary. Ships the opportunity-solution-tree skill.",
+  "author": {
+    "name": "Jung Jiwon & Lee Jongkwan"
+  }
+}

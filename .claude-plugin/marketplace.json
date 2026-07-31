@@ -5,9 +5,29 @@
   },
   "plugins": [
     {
-      "name": "product",
-      "source": "./product",
-      "description": "The product role on contract v3: decides what to build \u2014 value and business-viability risk. Pre-registered hypothesis discipline (named metric, numeric threshold, decision rule fixed before data; guardrails non-empty), one-pager problem-without-solution lens, assumption-mapped research, and a verdict that is the mechanical application of the registered rule. Ships skills: hypothesis-testing, assumption-mapping, one-pager, opportunity-solution-tree, guardrail-metrics."
+      "name": "product-one-pager",
+      "source": "./product-one-pager",
+      "description": "The product-one-pager methodology: JTBD problem-without-solution framing for the current-state survey — the problem stated as a job-performer/job/circumstance/desired-outcome 4-tuple, fixed before any solution name appears; if the issue text embeds a solution, the survey restates the problem in the customer's terms and notes the gap. Ships skills: one-pager."
+    },
+    {
+      "name": "product-opportunity-solution-tree",
+      "source": "./product-opportunity-solution-tree",
+      "description": "The product-opportunity-solution-tree methodology: placing the current-state survey on the relevant OST branch (outcome / opportunity / candidate solutions / discriminating assumption test) in OST's own four-layer vocabulary, and recording which branch was pruned or promoted at the phase-2 verdict. Ships skills: opportunity-solution-tree."
+    },
+    {
+      "name": "product-assumption-mapping",
+      "source": "./product-assumption-mapping",
+      "description": "The product-assumption-mapping methodology: one-line evidence citations (interview/observation count, approximate date range, short paraphrase) for the proposal, and RICE scoring across compared opportunity or solution candidates, falling back to an explicitly-flagged ICE score only when reach data is genuinely unavailable. Ships skills: assumption-mapping."
+    },
+    {
+      "name": "product-hypothesis-testing",
+      "source": "./product-hypothesis-testing",
+      "description": "The product-hypothesis-testing methodology: pre-registering a named metric, a numeric threshold, and a go/kill/pivot decision rule before data collection, pre-committing an ITWWS follow-up, and applying the registered rule mechanically at verdict time — metric stated adjacent to its threshold, ITWWS actioned or explicitly deferred with a reason. Ships skills: hypothesis-testing."
+    },
+    {
+      "name": "product-guardrail-metrics",
+      "source": "./product-guardrail-metrics",
+      "description": "The product-guardrail-metrics methodology: guardrail metrics named non-empty at the same moment a hypothesis is registered, and their status stated explicitly (never implied) at the same measurement moment as the verdict. Ships skills: guardrail-metrics."
     }
   ]
 }
