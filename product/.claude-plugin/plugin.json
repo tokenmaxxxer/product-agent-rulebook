@@ -1,7 +1,0 @@
-{
-  "name": "product",
-  "description": "The product role on contract v3: decides what to build \u2014 value and business-viability risk. Pre-registered hypothesis discipline (named metric, numeric threshold, decision rule fixed before data; guardrails non-empty), one-pager problem-without-solution lens, assumption-mapped research, and a verdict that is the mechanical application of the registered rule. Ships skills: hypothesis-testing, assumption-mapping, one-pager, opportunity-solution-tree, guardrail-metrics.",
-  "author": {
-    "name": "Jung Jiwon & Lee Jongkwan"
-  }
-}
