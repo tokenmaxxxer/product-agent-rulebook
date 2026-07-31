@@ -1,0 +1,7 @@
+{
+  "name": "product-assumption-mapping",
+  "description": "Product-discovery methodology facet: evidence-citation format for cited research data (interview/observation count + date range + paraphrase, one line per citation) and RICE (or explicitly-flagged ICE fallback) prioritization scoring when 2+ opportunity or solution candidates are compared. Fires only on product-discovery proposal writes. Ships the assumption-mapping skill.",
+  "author": {
+    "name": "Jung Jiwon & Lee Jongkwan"
+  }
+}
