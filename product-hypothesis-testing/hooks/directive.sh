@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/role-directive.sh"
+
+you_decide=$'YOU DECIDE: whether a hypothesis is registered before any data is\ncollected, and whether the eventual verdict is the mechanical\napplication of that registered rule. You prevent a threshold moving\nafter measurement starts, and the sharper failure: no threshold ever\nfixed at all.'
+use_when=$'PRE-REGISTRATION (phase 1, proposal): whenever a go/kill/pivot decision\nis still open and the metric or threshold has not yet been written\ndown. Once a test is already running with thresholds fixed, this\nmethodology\'s job is to hold the line, not to re-derive it.'
+produces=$'PROPOSAL (phase 1, pre-registration): the hypothesis package — a NAMED\nmetric, a NUMERIC threshold, and the decision rule (go/kill/pivot),\nfixed BEFORE any data. "We believe X; we will know when <metric>\ncrosses <number>." Prose without a number is not a registration.\nGuardrail metrics are named and non-empty at the same moment — a win on\nthe primary while a guardrail breaches is a reduced-trust result, not a\nwin. Pre-commit the ITWWS follow-up ("if this works we should ...").'
+hand_off=$'EXECUTION JUDGMENT (phase 2, quality bar):\n- The verdict is the MECHANICAL application of the registered rule to the\n  collected data — never fresh judgment once the numbers are in. The\n  threshold is immutable after measurement starts: the finish line\n  cannot move.\n- The record states, next to each other, the measured metric value and\n  the threshold it is compared against.\n- The pre-committed ITWWS follow-up is either actioned or explicitly\n  deferred with a reason.'
+
+core_role_directive "$you_decide" "$use_when" "$produces" "$hand_off"
