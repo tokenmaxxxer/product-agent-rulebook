@@ -1,5 +1,5 @@
 ---
-kind: report
+kind: scout-brief
 subject: issue-36
 role: product-discovery
 ---
