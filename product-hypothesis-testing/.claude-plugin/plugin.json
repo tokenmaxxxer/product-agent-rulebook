@@ -1,0 +1,7 @@
+{
+  "name": "product-hypothesis-testing",
+  "description": "Pre-registered hypothesis discipline for product-discovery: a NAMED metric, a NUMERIC threshold, and the decision rule (go/kill/pivot) fixed BEFORE any data, plus the ITWWS follow-up committed at registration and either actioned or explicitly deferred with a reason at verdict time. Ships the hypothesis-testing skill.",
+  "author": {
+    "name": "Jung Jiwon & Lee Jongkwan"
+  }
+}
