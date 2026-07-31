@@ -1,0 +1,7 @@
+{
+  "name": "product-guardrail-metrics",
+  "description": "Guardrail-metric discipline for product-discovery: guardrail metric(s) named non-empty at the same moment the hypothesis is registered, plus guardrail status stated explicitly (never implied) at the same measurement moment as the verdict. Ships the guardrail-metrics skill.",
+  "author": {
+    "name": "Jung Jiwon & Lee Jongkwan"
+  }
+}
