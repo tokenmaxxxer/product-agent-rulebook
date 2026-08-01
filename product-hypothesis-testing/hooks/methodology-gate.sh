@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh"
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh" || { echo "product-hypothesis-testing: cannot source gate-lib.sh" >&2; exit 2; }
 gate_trap_fail_closed
 # PreToolUse gate for product-hypothesis-testing: pre-registered hypothesis
 # discipline. Fires on the phase-1 PROPOSAL write
@@ -184,8 +184,6 @@ def has_decision_rule(t):
     for line in t.split('\n'):
         if re.match(r'^\s*(decision[\s-]?rule)\s*:\s*\S.*\b(go|kill|pivot)\b', line, re.IGNORECASE):
             return True
-    if re.search(r'진행|중단|피벗', t):
-        return True
     # Section/paragraph anchored: a decision-shaped heading whose paragraph
     # both mentions go/kill/pivot AND a threshold/metric word.
     for heading, body in split_sections(t):
@@ -241,7 +239,11 @@ if m_record:
     if not has_itwws(text):
         deny("ITWWS follow-up is missing, or deferred with no stated reason.")
 
-    actioned = re.search(r'actioned|진행함', text, re.IGNORECASE)
+    actioned = False
+    for para in paragraphs(text):
+        if has_itwws(para) and re.search(r'actioned|진행함', para, re.IGNORECASE):
+            actioned = True
+            break
     deferred_ok = False
     for m in re.finditer(r'deferred', text, re.IGNORECASE):
         start = text.rfind("\n", 0, m.start()) + 1

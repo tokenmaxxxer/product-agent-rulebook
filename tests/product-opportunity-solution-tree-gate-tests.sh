@@ -201,5 +201,13 @@ Outcome: reduce time-to-value.
 Opportunity: onboarding friction is high.'
 run allow survey-semantic-well-formed-allows "$SURVEY" "$SURVEY_WELL_FORMED"
 
+# missing-core: CLAUDE_PLUGIN_ROOT_CORE points nowhere -> guarded source
+# must deny (exit 2), not silently allow (issue-75 fix).
+td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"; mkdir -p "$td/docs/issue-7/reports/product-discovery"
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"nothing"},"cwd":"%s"}' "$SURVEY" "$td" \
+  | env CLAUDE_PROJECT_DIR="$td" CLAUDE_PLUGIN_ROOT_CORE="$td/no-such-core" /bin/bash "$HOOKS/methodology-gate.sh" >/dev/null 2>&1
+rc=$?; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
+rm -rf "$td"; report deny "$got" missing-core-denies
+
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

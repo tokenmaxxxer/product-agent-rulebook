@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh"
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh" || { echo "product-guardrail-metrics: cannot source gate-lib.sh" >&2; exit 2; }
 gate_trap_fail_closed
 # ^ fail-closed trap-at-top, from gate-lib.sh (issue-72): any abnormal
 #   termination (failed source, set -u abort, unbound var, etc.) before the

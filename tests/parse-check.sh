@@ -28,11 +28,16 @@
 # pins /bin/bash rather than using $BASH: run under bash 5 it still passes
 # every file and simply cannot see the defect.
 #
-# Usage: parse-check.sh [hooks-dir]
+# Usage: parse-check.sh <hooks-dir>
+#
+# Distributed verbatim to every rulebook in the tokenmaxxxer org (same as
+# deny-only-check.sh) — hooks-dir has no safe repo-agnostic default, so it
+# is a required argument rather than a per-repo-guessed fallback.
 set -uo pipefail
 
 BASH32="${PARSE_CHECK_BASH:-/bin/bash}"
-dir="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../product/hooks" 2>/dev/null && pwd -P)}"
+[ $# -ge 1 ] || { echo "parse-check: usage: parse-check.sh <hooks-dir>" >&2; exit 2; }
+dir="$1"
 [ -d "$dir" ] || { echo "parse-check: no such directory: $dir" >&2; exit 2; }
 [ -x "$BASH32" ] || { echo "parse-check: $BASH32 is not executable" >&2; exit 2; }
 "$BASH32" --version | head -1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh"
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh" || { echo "product-opportunity-solution-tree: cannot source gate-lib.sh" >&2; exit 2; }
 gate_trap_fail_closed
 # PreToolUse gate (Write|Edit|MultiEdit|NotebookEdit|Bash) — the
 # opportunity-solution-tree (OST) facet of the product-discovery

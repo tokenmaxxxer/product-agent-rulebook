@@ -197,5 +197,17 @@ No solution named yet.'
 
 run_write allow well-formed-labeled-survey-allows "$SURVEY" "$WELL_FORMED_LABELED"
 
+# missing-core: CLAUDE_PLUGIN_ROOT_CORE points nowhere -> guarded source
+# must deny (exit 2), not silently allow (issue-75 fix).
+missing_core_test() {
+  td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"; mkdir -p "$td/$(dirname "$SURVEY")"
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":%s},"cwd":"%s"}' \
+    "$SURVEY" "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$JTBD")" "$td" \
+    | env CLAUDE_PLUGIN_ROOT_CORE="$td/no-such-core" CLAUDE_PROJECT_DIR="$td" /bin/bash "$HOOKS/methodology-gate.sh" >/dev/null 2>&1
+  rc=$?; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
+  rm -rf "$td"; report deny "$got" missing-core-denies
+}
+missing_core_test
+
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

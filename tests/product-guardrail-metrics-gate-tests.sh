@@ -216,5 +216,15 @@ bash_unrelated_allow() {
 }
 bash_unrelated_allow
 
+missing_core() {
+  td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"; mkdir -p "$td/docs/issue-7/proposals"
+  printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"Guardrail: signup-error-rate must stay under 2%%."},"cwd":"%s"}' \
+    "$PROPOSAL" "$td" \
+    | env CLAUDE_PROJECT_DIR="$td" CLAUDE_PLUGIN_ROOT_CORE="$td/no-such-core" /bin/bash "$HOOKS/methodology-gate.sh" >/dev/null 2>&1
+  rc=$?; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
+  rm -rf "$td"; report deny "$got" missing-core-denies
+}
+missing_core
+
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
