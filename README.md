@@ -124,10 +124,14 @@ this vocabulary.
     /bin/bash tests/parse-check.sh product-guardrail-metrics/hooks
     /bin/bash tests/run-gate-tests.sh
     /bin/bash tests/deny-only-check.sh product-one-pager/hooks
-    # ...and so on per plugin; deny-only-check.sh's substance probe targets
-    # a generic docs/issue-<n>/reports/product.md path that no gate in this
-    # repo claims (each plugin only fires on its own proposal/survey/record
-    # scope), so that probe is a known no-op here, not a regression.
+    # ...and so on per plugin; deny-only-check.sh's substance probe always
+    # searches this repo's full tree for a *-gate.sh regardless of the
+    # hooks-dir argument above, since the record obligation
+    # (docs/issue-<n>/reports/product-discovery.md) is federated across
+    # only 3 of the 5 plugins (product-opportunity-solution-tree,
+    # product-hypothesis-testing, product-guardrail-metrics) — the other 2
+    # explicitly carry no record obligation. The probe passes once any one
+    # of the 3 refuses the empty record.
 
 `tests/run-gate-tests.sh` runs all 5 plugins' own
 `tests/product-*-gate-tests.sh` suites plus core's
