@@ -224,5 +224,15 @@ payload="$(printf '{"tool_name":"Bash","tool_input":{"command":"git status"},"cw
 run_payload allow bash-unrelated-command-pass "$payload" "$td"
 rm -rf "$td"
 
+# missing-core: CLAUDE_PLUGIN_ROOT_CORE points nowhere -> guarded source
+# must deny (exit 2), not silently allow (issue-75 fix).
+td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"
+mkdir -p "$td/$(dirname "$TARGET")" "$td/$(dirname "$CURRENT_STATE")"
+echo "survey" > "$td/$CURRENT_STATE"
+payload="$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":%s},"cwd":"%s"}' \
+  "$TARGET" "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$ZERO_CITATION")" "$td")"
+run_payload deny missing-core-denies "$payload" "$td" CLAUDE_PLUGIN_ROOT_CORE="$td/no-such-core"
+rm -rf "$td"
+
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

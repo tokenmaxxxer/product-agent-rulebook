@@ -215,5 +215,12 @@ Decision rule: go if it crosses, kill otherwise.
 ITWWS: if this works we should roll it out.'
 run allow decision-rule-well-formed-label "$PROPOSAL" "$WELL_FORMED_DECISION" yes
 
+# missing-core: CLAUDE_PLUGIN_ROOT_CORE points nowhere -> guarded source
+# must deny (exit 2) before any payload is even read, not silently allow
+# (issue-75 fix).
+run_raw deny missing-core-denies \
+  "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":%s}}' "$PROPOSAL" "$(jesc "$FULL")")" \
+  CLAUDE_PLUGIN_ROOT_CORE=/no-such-core
+
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh"
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh" || { echo "product-assumption-mapping: cannot source gate-lib.sh" >&2; exit 2; }
 gate_trap_fail_closed
 # product-assumption-mapping gate: evidence-citation format + RICE/ICE
 # prioritization, fired only on product-discovery proposal writes.
