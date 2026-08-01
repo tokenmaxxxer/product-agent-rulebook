@@ -1,69 +1,34 @@
 #!/usr/bin/env bash
-# The surviving review gates, exercised as real subprocesses.
+# Root dispatcher for this repo's real gate suites. Previously referenced
+# ../product/hooks/record-fields-gate.sh and trailer-gate.sh, which do not
+# exist anywhere in this tree (issue #45 survey §5) — this repo has no
+# `product` plugin, only the 5 `product-*` plugins below, each owning its
+# own methodology-gate.sh and its own tests/product-*-gate-tests.sh suite.
+# This script's only job is to run all 5 as subprocesses, plus core's
+# compliance-check.sh against every plugin's hooks/ directory (issue #45
+# requirement: catch a future hand-rolled kill-switch/reconstruct drift
+# back away from gate-lib.sh, not just fix it once).
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-HOOKS="$HERE/../product/hooks"
-pass=0; fail=0
-report() { if [ "$2" = "$1" ]; then pass=$((pass+1)); printf 'ok     %-34s %s\n' "$3" "$2"; else fail=$((fail+1)); printf 'FAIL   %-34s want=%s got=%s\n' "$3" "$1" "$2"; fi; }
+ROOT="$(cd "$HERE/.." && pwd -P)"
 
-REC=docs/issue-7/reports/product.md
-run() { # want name gate file content
-  td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"; mkdir -p "$td/docs/issue-7/reports"
-  printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":%s},"cwd":"%s"}' \
-    "$4" "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$5")" "$td" \
-    | env CLAUDE_PROJECT_DIR="$td" /bin/bash "$HOOKS/$3" >/dev/null 2>&1
-  rc=$?; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
-  rm -rf "$td"; report "$1" "$got" "$2"
-}
+# Resolve core's plugin root the same way the gates and their own test
+# suites do, so compliance-check.sh below can be found.
+if [ -z "${CLAUDE_PLUGIN_ROOT_CORE:-}" ]; then
+  for cand in "$HOME/tokenmaxxxer/tokenmaxxxer-core/core" \
+              "$HOME/.claude/plugins/marketplaces/tokenmaxxxer/runs/rulebooks/tokenmaxxxer-core/core" \
+              "$ROOT/../tokenmaxxxer-core/core"; do
+    if [ -f "$cand/hooks/lib/gate-lib.sh" ]; then export CLAUDE_PLUGIN_ROOT_CORE="$cand"; break; fi
+  done
+fi
+if [ -z "${CLAUDE_PLUGIN_ROOT_CORE:-}" ] || [ ! -f "$CLAUDE_PLUGIN_ROOT_CORE/hooks/lib/gate-lib.sh" ]; then
+  echo "run-gate-tests: cannot locate core's gate-lib.sh — set CLAUDE_PLUGIN_ROOT_CORE to the installed core plugin root" >&2
+  exit 1
+fi
+export CLAUDE_PLUGIN_ROOT_CORE
 
-GOOD='loop_state: decided
-hypothesis: docs/issue-7/proposals/2026-07-28-h.md
-## What was done
-Applied the registered rule. Basis: upstream commit abc1234.
-## Why
-Kill per rule; continuing was rejected because the threshold was missed.'
-run allow record-complete record-fields-gate.sh "$REC" "$GOOD"
-run deny  record-empty    record-fields-gate.sh "$REC" "nothing"
-true || run deny  bad-verdict     record-fields-gate.sh "$REC" 'loop_state: reported
-## What was done
-x — upstream basis abc1234
-verdict: LGTM'
-true || run deny  incorrect-needs-svb record-fields-gate.sh "$REC" 'loop_state: reported
-## What was done
-x — upstream basis abc1234
-verdict: Incorrect'
-run deny  open-no-backlog record-fields-gate.sh "$REC" 'loop_state: auditing
-## What was done
-x — upstream basis abc1234'
-run allow record-scope-proposed record-fields-gate.sh "$REC" 'loop_state: scope-proposed
-hypothesis: docs/issue-7/proposals/2026-07-28-h.md
-## What was done
-Raised the front record to scope-proposed for the pre-approval gate.
-## Why
-Scope is frozen and ready for human accept; no further open work.'
-run allow foreign-path    record-fields-gate.sh "docs/issue-7/reports/verify.md" "x"
-
-trailergate() { # want name stagepath commitcmd
-  td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"
-  ( cd "$td" && git config user.email t@t && git config user.name t \
-    && mkdir -p "$(dirname "$3")" && echo x > "$3" && git add "$3" )
-  printf '{"tool_name":"Bash","tool_input":{"command":%s},"cwd":"%s"}' \
-    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$4")" "$td" \
-    | ( cd "$td" && env -u CLAUDE_PROJECT_DIR /bin/bash "$HOOKS/trailer-gate.sh" ) >/dev/null 2>&1
-  rc=$?; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
-  rm -rf "$td"; report "$1" "$got" "$2"
-}
-trailergate deny  commit-no-trailer   "$REC" 'git commit -m "update"'
-trailergate allow commit-with-trailer "$REC" 'git commit -m "update
-
-Subject: issue-7"'
-trailergate allow commit-non-issue    "src/app.py" 'git commit -m "x"'
-
-printf '\n== %d passed, %d failed (product/hooks legacy checks) ==\n' "$pass" "$fail"
-
-# Each product-* methodology plugin owns its own gate test file, run as its
-# own subprocess suite (proposal section 6: this dispatch, not a new one).
 plugin_fail=0
+
 for suite in product-one-pager product-opportunity-solution-tree \
              product-assumption-mapping product-hypothesis-testing \
              product-guardrail-metrics; do
@@ -71,6 +36,22 @@ for suite in product-one-pager product-opportunity-solution-tree \
   bash "$HERE/$suite-gate-tests.sh" || plugin_fail=1
 done
 
-overall_fail=$fail
-[ "$plugin_fail" -eq 0 ] || overall_fail=$((overall_fail + 1))
+echo; echo "-- compliance-check.sh (core issue #72) --"
+compliance_fail=0
+for plugin in product-one-pager product-opportunity-solution-tree \
+              product-assumption-mapping product-hypothesis-testing \
+              product-guardrail-metrics; do
+  bash "$CLAUDE_PLUGIN_ROOT_CORE/hooks/tests/compliance-check.sh" "$ROOT/$plugin/hooks" || compliance_fail=1
+done
+
+overall_fail=0
+[ "$plugin_fail" -eq 0 ] || overall_fail=1
+[ "$compliance_fail" -eq 0 ] || overall_fail=1
+
+echo
+if [ "$overall_fail" -eq 0 ]; then
+  echo "run-gate-tests: all 5 plugin suites + compliance-check.sh passed"
+else
+  echo "run-gate-tests: FAILURES present (plugin_fail=$plugin_fail compliance_fail=$compliance_fail)" >&2
+fi
 exit "$overall_fail"
