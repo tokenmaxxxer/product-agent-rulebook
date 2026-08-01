@@ -41,8 +41,8 @@ else
 fi
 
 # --- substance probe: an empty product record must be refused -------------
-probe_dir="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../product/hooks" && pwd -P)}"
-rec_rel="docs/issue-999/reports/product.md"
+probe_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+rec_rel="docs/issue-999/reports/product-discovery.md"
 
 substance_probe() {
   gates="$(find "$probe_dir" -name '*-gate.sh' -type f 2>/dev/null || true)"
