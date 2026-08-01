@@ -1,56 +1,84 @@
 #!/usr/bin/env bash
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh"
+gate_trap_fail_closed
 # product-assumption-mapping gate: evidence-citation format + RICE/ICE
 # prioritization, fired only on product-discovery proposal writes.
 set -uo pipefail
+gate_kill_switch_active "${PRODUCT_ASSUMPTION_MAPPING_GATE_OFF:-}" || { trap - EXIT; exit 0; }
 
 payload="$(cat)"
 
-[ "${PRODUCT_ASSUMPTION_MAPPING_GATE_OFF:-}" = "1" ] && exit 0
-
 deny() {
-  printf '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$1"
+  printf '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1" 2>/dev/null || echo '"product-assumption-mapping: refused"')"
   exit 2
 }
-
-on_err() {
-  echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"product-assumption-mapping: refused — gate crashed, failing closed."}}'
-  exit 2
-}
-trap on_err ERR
 
 command -v python3 >/dev/null 2>&1 || deny "product-assumption-mapping: refused — python3 not available, failing closed."
 
 [ -n "$payload" ] || deny "product-assumption-mapping: refused — empty stdin payload."
 
-parsed="$(printf '%s' "$payload" | python3 -c '
+# --- Bash-tool coverage: scan command for proposal-path-shaped write targets
+bash_cmd="$(printf '%s' "$payload" | python3 -c '
 import json, sys
 try:
-    data = json.load(sys.stdin)
+    data = json.loads(sys.stdin.read())
 except Exception:
+    print("")
+    sys.exit(0)
+if isinstance(data, dict) and data.get("tool_name") == "Bash":
+    ti = data.get("tool_input")
+    if isinstance(ti, dict) and isinstance(ti.get("command"), str):
+        print(ti["command"])
+    else:
+        print("")
+else:
+    print("")
+' 2>/dev/null)"
+
+if [ -n "$bash_cmd" ]; then
+  for tok in $(gate_bash_write_targets "$bash_cmd"); do
+    case "$tok" in
+      */docs/issue-*/proposals/*product-discovery*.md|docs/issue-*/proposals/*product-discovery*.md)
+        echo "$tok" | grep -Eq 'docs/issue-[0-9]+/proposals/.*product-discovery.*\.md$' && \
+          deny "product-assumption-mapping: refused — Bash write to proposal path cannot be verified for evidence-citation/RICE facets."
+        ;;
+    esac
+  done
+fi
+
+# --- parse payload + extract fields in one python invocation ---------------
+parsed="$(printf '%s' "$payload" | python3 -c '
+import importlib.util, os, sys, json
+_spec = importlib.util.spec_from_file_location("gate_lib", os.environ["GATE_LIB_PY"])
+gate_lib = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(gate_lib)
+
+def deny(msg):
     print("__PARSE_ERROR__")
     sys.exit(0)
-if not isinstance(data, dict):
-    print("__PARSE_ERROR__")
-    sys.exit(0)
-tool_input = data.get("tool_input")
+
+raw = sys.stdin.read()
+event = gate_lib.gate_parse_json_or_deny(raw, deny)
+tool_input = event.get("tool_input")
 if not isinstance(tool_input, dict):
     print("__PARSE_ERROR__")
     sys.exit(0)
-tool_name = data.get("tool_name", "")
-file_path = tool_input.get("file_path", "")
-cwd = data.get("cwd", "")
+
 print("__OK__")
-print(tool_name)
-print(file_path)
-print(cwd)
+print(json.dumps({
+    "tool_name": event.get("tool_name", ""),
+    "file_path": tool_input.get("file_path", tool_input.get("notebook_path", "")),
+    "cwd": event.get("cwd", ""),
+}))
 ' 2>/dev/null)"
 
-first_line="$(printf '%s\n' "$parsed" | sed -n '1p')"
+first_line="$(printf '%s\n' "$parsed" | head -n 1)"
 [ "$first_line" = "__OK__" ] || deny "product-assumption-mapping: refused — malformed or non-dict tool_input."
 
-tool_name="$(printf '%s\n' "$parsed" | sed -n '2p')"
-file_path="$(printf '%s\n' "$parsed" | sed -n '3p')"
-cwd="$(printf '%s\n' "$parsed" | sed -n '4p')"
+fields_json="$(printf '%s\n' "$parsed" | tail -n +2)"
+tool_name="$(printf '%s' "$fields_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tool_name"])')"
+file_path="$(printf '%s' "$fields_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["file_path"])')"
+cwd="$(printf '%s' "$fields_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["cwd"])')"
 
 # --- resolve project root --------------------------------------------------
 _plausible() { [ -n "${1:-}" ] && [ -d "$1" ]; }
@@ -65,11 +93,13 @@ else
 fi
 
 # --- only this plugin's target surface -------------------------------------
-case "$file_path" in
-  /*) abs_path="$file_path" ;;
-  *) abs_path="$root/$file_path" ;;
-esac
-rel_path="${abs_path#"$root"/}"
+rel_path="$(python3 -c '
+import importlib.util, os, sys
+_spec = importlib.util.spec_from_file_location("gate_lib", os.environ["GATE_LIB_PY"])
+gate_lib = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(gate_lib)
+rel = gate_lib.gate_normalize_path(sys.argv[1], sys.argv[2])
+print(rel if rel is not None else "")
+' "$root" "$file_path")"
 
 echo "$rel_path" | grep -Eq '^docs/issue-[0-9]+/proposals/.*product-discovery.*\.md$' || exit 0
 
@@ -79,9 +109,13 @@ issue_n="$(printf '%s' "$rel_path" | sed -E 's#^docs/issue-([0-9]+)/proposals/.*
 current_state="$root/docs/issue-$issue_n/reports/product-discovery/current-state.md"
 [ -f "$current_state" ] || deny "product-assumption-mapping: refused — proposal write precedes its own current-state survey"
 
+abs_path="$root/$rel_path"
+
 # --- reconstruct resulting text --------------------------------------------
 resulting_text="$(python3 -c '
-import json, sys
+import importlib.util, json, os, sys
+_spec = importlib.util.spec_from_file_location("gate_lib", os.environ["GATE_LIB_PY"])
+gate_lib = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(gate_lib)
 
 payload = sys.argv[1]
 abs_path = sys.argv[2]
@@ -102,63 +136,16 @@ def read_current():
     except Exception:
         return None
 
-if tool_name == "Write":
-    content = tool_input.get("content")
-    if content is None:
-        print("__RECON_ERROR__")
-        sys.exit(0)
-    print("__RECON_OK__")
-    print(content, end="")
+current = read_current()
+new_text, ok = gate_lib.gate_reconstruct_write(tool_name, tool_input, current)
+if not ok:
+    print("__RECON_ERROR__")
     sys.exit(0)
-
-if tool_name == "Edit":
-    old_string = tool_input.get("old_string")
-    new_string = tool_input.get("new_string")
-    if old_string is None or new_string is None:
-        print("__RECON_ERROR__")
-        sys.exit(0)
-    current = read_current()
-    if current is None:
-        print("__RECON_ERROR__")
-        sys.exit(0)
-    if old_string not in current:
-        print("__RECON_ERROR__")
-        sys.exit(0)
-    result = current.replace(old_string, new_string, 1)
-    print("__RECON_OK__")
-    print(result, end="")
-    sys.exit(0)
-
-if tool_name == "MultiEdit":
-    edits = tool_input.get("edits")
-    if not isinstance(edits, list) or not edits:
-        print("__RECON_ERROR__")
-        sys.exit(0)
-    current = read_current()
-    if current is None:
-        print("__RECON_ERROR__")
-        sys.exit(0)
-    for e in edits:
-        if not isinstance(e, dict):
-            print("__RECON_ERROR__")
-            sys.exit(0)
-        old_string = e.get("old_string")
-        new_string = e.get("new_string")
-        if old_string is None or new_string is None:
-            print("__RECON_ERROR__")
-            sys.exit(0)
-        if old_string not in current:
-            print("__RECON_ERROR__")
-            sys.exit(0)
-        current = current.replace(old_string, new_string, 1)
-    print("__RECON_OK__")
-    print(current, end="")
-    sys.exit(0)
-
-print("__RECON_ERROR__")
+print("__RECON_OK__")
+sys.stdout.write(new_text)
 ' "$payload" "$abs_path")"
 
-recon_marker="$(printf '%s\n' "$resulting_text" | sed -n '1p')"
+recon_marker="$(printf '%s\n' "$resulting_text" | head -n 1)"
 [ "$recon_marker" = "__RECON_OK__" ] || deny "product-assumption-mapping: refused — cannot determine resulting content"
 body="$(printf '%s\n' "$resulting_text" | tail -n +2)"
 
@@ -166,19 +153,53 @@ body="$(printf '%s\n' "$resulting_text" | tail -n +2)"
 verdict="$(printf '%s' "$body" | python3 -c '
 import re, sys
 
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+BOLD_LABEL_RE = re.compile(r"^\*\*([^*]+)\*\*\s*:?\s*$")
+
+def split_sections(text):
+    lines = text.split("\n")
+    sections = []
+    cur_heading = ""
+    cur_lines = []
+    for line in lines:
+        h = HEADING_RE.match(line)
+        b = BOLD_LABEL_RE.match(line)
+        if h or b:
+            sections.append((cur_heading, "\n".join(cur_lines)))
+            cur_heading = (h.group(2) if h else b.group(1)).strip()
+            cur_lines = []
+        else:
+            cur_lines.append(line)
+    sections.append((cur_heading, "\n".join(cur_lines)))
+    return sections
+
 text = sys.stdin.read()
+lines = text.splitlines()
+
+EVIDENCE_HEADING_RE = re.compile(r"(?i)evidence|citation|assumption|interview")
+BULLET_RE = re.compile(r"^\s*[-*]\s")
+
+# map each line index to its enclosing heading (last heading seen above it)
+heading_for_line = []
+cur_heading = ""
+for line in lines:
+    h = HEADING_RE.match(line)
+    if h:
+        cur_heading = h.group(2).strip()
+    heading_for_line.append(cur_heading)
 
 # (a) evidence-citation format ----------------------------------------------
 citation_lines = []
-for line in text.splitlines():
+for idx, line in enumerate(lines):
     if re.search(r"(?i)\b(interview|observation|evidence)\b.{0,40}?\b[0-9]+\b", line):
-        citation_lines.append(line)
+        anchored = bool(BULLET_RE.match(line)) or bool(EVIDENCE_HEADING_RE.search(heading_for_line[idx]))
+        if anchored:
+            citation_lines.append(line)
 
 if citation_lines:
     date_re = re.compile(r"(?:\b(19|20)\d{2}\b|\d{4}-\d{2}(?:-\d{2})?)")
     for line in citation_lines:
         has_date = bool(date_re.search(line))
-        # paraphrase: some non-trivial text remains after stripping count/date tokens
         stripped = date_re.sub("", line)
         stripped = re.sub(r"[0-9]+", "", stripped)
         stripped = re.sub(r"[^A-Za-z가-힣]+", " ", stripped).strip()
@@ -189,8 +210,7 @@ if citation_lines:
 
 # (b) RICE / ICE prioritization ---------------------------------------------
 candidate_markers = re.findall(r"(?im)^\s*[-*]\s*.*\b(candidate|opportunity)\b", text)
-candidate_count = len(set(candidate_markers)) if False else len(candidate_markers)
-# also count explicit numbered "N candidates" style mention
+candidate_count = len(candidate_markers)
 explicit = re.search(r"(?i)\b([2-9]|[1-9][0-9]+)\s+(candidates|opportunities)\b", text)
 two_plus = candidate_count >= 2 or bool(explicit)
 

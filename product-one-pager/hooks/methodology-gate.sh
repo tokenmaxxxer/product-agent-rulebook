@@ -1,46 +1,50 @@
 #!/usr/bin/env bash
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh"
+gate_trap_fail_closed
 # product-one-pager methodology gate: fires only on the current-state
 # survey write (docs/issue-<n>/reports/product-discovery/current-state.md)
 # and checks the JTBD problem-without-solution facet — see
 # docs/issue-42/proposals/2026-07-31-methodology-gate-machine.md section 1.
+#
+# Migrated to the gate-house standard (core issue #72) per issue #45's gate
+# A+ remediation: adopts gate-lib.sh/gate-lib.py by reference for the
+# fail-closed trap, kill switch, JSON parse, path normalization, and
+# Write/Edit/MultiEdit/NotebookEdit reconstruction, rather than hand-rolling
+# each. Also fixes a dead ternary in the case-fold of solution markers, and
+# upgrades the JTBD-tuple semantic check from bare substring-anywhere-in-
+# document matching to a section/adjacency/structure-aware check (issue #45
+# requirement #2) so an incidental mention like
+# "docs/handbooks/circumstance-notes.md" outside any JTBD-labeled section no
+# longer false-positives an ALLOW.
+#
+# Kill switch: export PRODUCT_ONE_PAGER_GATE_OFF=1 (any other value leaves
+# it active, per gate_kill_switch_active's fixed on-spelling set —
+# 1/true/yes/on).
 set -uo pipefail
+gate_kill_switch_active "${PRODUCT_ONE_PAGER_GATE_OFF:-}" || { trap - EXIT; exit 0; }
 
 deny() {
-  printf '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$1"
+  printf '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1" 2>/dev/null || echo '"product-one-pager: refused"')"
   exit 2
 }
 
-# Kill switch — independently toggleable per plugin.
-if [ "${PRODUCT_ONE_PAGER_GATE_OFF:-}" = "1" ]; then
-  exit 0
-fi
-
-trap 'deny "product-one-pager: internal error in methodology-gate.sh"' ERR
-
 command -v python3 >/dev/null 2>&1 || deny "product-one-pager: refused — python3 unavailable"
 
-payload="$(cat)"
-[ -n "$payload" ] || deny "product-one-pager: refused — cannot parse tool call"
-
-parsed="$(printf '%s' "$payload" | python3 -c '
-import json, sys
-try:
-    obj = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-if not isinstance(obj, dict):
-    sys.exit(1)
-ti = obj.get("tool_input")
-if not isinstance(ti, dict):
-    sys.exit(1)
-print(json.dumps(obj))
-' 2>/dev/null)"
-[ -n "$parsed" ] || deny "product-one-pager: refused — cannot parse tool call"
+payload="$(cat 2>/dev/null || true)"
+[ -n "$payload" ] || deny "product-one-pager: refused — empty tool-use payload; cannot evaluate the gate on nothing"
 
 get_field() {
-  printf '%s' "$parsed" | python3 -c "
+  printf '%s' "$payload" | python3 -c "
 import json, sys
-obj = json.load(sys.stdin)
+try:
+    obj = json.loads(sys.stdin.read())
+except Exception:
+    print('')
+    sys.exit(0)
+if not isinstance(obj, dict):
+    print('')
+    sys.exit(0)
 val = obj
 for key in sys.argv[1:]:
     if isinstance(val, dict) and key in val:
@@ -57,14 +61,45 @@ else:
 " "$@"
 }
 
+printf '%s' "$payload" | python3 -c '
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(obj, dict) else 1)
+' || deny "product-one-pager: refused — the tool-call payload is not a valid JSON object; failing closed"
+
 tool_name="$(get_field tool_name)"
 file_path="$(get_field tool_input file_path)"
+notebook_path="$(get_field tool_input notebook_path)"
+command_str="$(get_field tool_input command)"
 cwd="$(get_field cwd)"
 
-[ -n "$file_path" ] || exit 0
+# Bash-tool write coverage: cannot reconstruct content for a shell-redirected
+# write, so fail closed if any path-shaped token in the command looks like
+# the survey path.
+if [ "$tool_name" = "Bash" ] && [ -n "$command_str" ]; then
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    if printf '%s' "$tok" | grep -qE '(^|/)docs/issue-[0-9]+/reports/product-discovery/current-state\.md$'; then
+      deny "product-one-pager: refused — a Bash command may write to the current-state survey; this gate cannot verify the JTBD facet on a shell-redirected write — use Write/Edit/MultiEdit instead"
+    fi
+  done <<EOF
+$(gate_bash_write_targets "$command_str")
+EOF
+fi
 
-# Resolve project root: CLAUDE_PROJECT_DIR hint if plausible, else git
-# toplevel from cwd, else cwd itself.
+target_path="$file_path"
+is_notebook=0
+if [ -z "$target_path" ] && [ -n "$notebook_path" ]; then
+  target_path="$notebook_path"
+  is_notebook=1
+fi
+[ "$tool_name" = "NotebookEdit" ] && [ -n "$notebook_path" ] && { target_path="$notebook_path"; is_notebook=1; }
+
+[ -n "$target_path" ] || exit 0
+
 resolve_root() {
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -d "${CLAUDE_PROJECT_DIR:-}" ]; then
     case "$CLAUDE_PROJECT_DIR" in
@@ -86,199 +121,214 @@ resolve_root() {
 
 root="$(resolve_root)"
 
-# Only this plugin's own business: the current-state survey file.
-case "$file_path" in
-  /*) abs_path="$file_path" ;;
-  *) abs_path="$root/$file_path" ;;
-esac
-
-# Normalize to a root-relative form for the regex check regardless of
-# whether the incoming path was absolute or relative.
-rel_path="$abs_path"
-case "$abs_path" in
-  "$root"/*) rel_path="${abs_path#"$root"/}" ;;
-esac
-
-if ! printf '%s' "$rel_path" | grep -qE '(^|/)docs/issue-[0-9]+/reports/product-discovery/current-state\.md$'; then
-  exit 0
-fi
-
-# Reconstruct the resulting content for Write/Edit/MultiEdit, in a
-# single python3 invocation fed the full parsed
-# payload on stdin, avoiding intermediate shell temp files.
-resulting_content="$(printf '%s' "$parsed" | python3 -c '
-import json, sys, os
-
-obj = json.load(sys.stdin)
-tool_name = obj.get("tool_name", "")
-ti = obj.get("tool_input", {})
-abs_path = sys.argv[1]
-
-def read_existing():
-    try:
-        with open(abs_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception:
-        return None
-
-def apply_edit(text, old, new, replace_all):
-    if old == "":
-        return text + new
-    if old not in text:
-        return None
-    if replace_all:
-        return text.replace(old, new)
-    return text.replace(old, new, 1)
-
+POP_PAYLOAD="$payload" POP_ROOT="$root" POP_IS_NOTEBOOK="$is_notebook" GATE_LIB_PY="$GATE_LIB_PY" python3 <<'PY'
+import sys as _fc_sys
 try:
-    if tool_name == "Write":
-        content = ti.get("content")
-        if content is None:
-            print("__RECON_FAIL__")
-            sys.exit(0)
-        print(content, end="")
+    import importlib.util, json, os, re, sys
+
+    def deny(m):
+        payload = "product-one-pager: refused — " + m
+        sys.stdout.write(
+            '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":%s}}\n'
+            % json.dumps(payload)
+        )
+        sys.exit(2)
+
+    _spec = importlib.util.spec_from_file_location("gate_lib", os.environ["GATE_LIB_PY"])
+    gate_lib = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(gate_lib)
+
+    raw = os.environ.get("POP_PAYLOAD", "")
+    ev = gate_lib.gate_parse_json_or_deny(raw, deny)
+
+    tool = ev.get("tool_name")
+    if tool not in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         sys.exit(0)
 
-    if tool_name == "Edit":
-        existing = read_existing()
-        if existing is None:
-            print("__RECON_FAIL__")
-            sys.exit(0)
-        old = ti.get("old_string", "")
-        new = ti.get("new_string", "")
-        replace_all = bool(ti.get("replace_all", False))
-        result = apply_edit(existing, old, new, replace_all)
-        if result is None:
-            print("__RECON_FAIL__")
-            sys.exit(0)
-        print(result, end="")
+    ti = ev.get("tool_input")
+    if not isinstance(ti, dict):
+        deny("tool_input is missing or not a JSON object; the gate cannot judge a write it cannot parse.")
+
+    root = os.path.realpath(os.environ["POP_ROOT"]).replace("\\", "/")
+    SURVEY_RE = re.compile(r'(^|.*/)docs/issue-[0-9]+/reports/product-discovery/current-state\.md$')
+
+    is_notebook = os.environ.get("POP_IS_NOTEBOOK") == "1"
+    path = ti.get("notebook_path") if (tool == "NotebookEdit" or is_notebook) else ti.get("file_path")
+    if not isinstance(path, str) or not path:
         sys.exit(0)
 
-    if tool_name == "MultiEdit":
-        existing = read_existing()
-        if existing is None:
-            print("__RECON_FAIL__")
-            sys.exit(0)
-        edits = ti.get("edits")
-        if not isinstance(edits, list):
-            print("__RECON_FAIL__")
-            sys.exit(0)
-        text = existing
-        for e in edits:
-            if not isinstance(e, dict):
-                print("__RECON_FAIL__")
-                sys.exit(0)
-            old = e.get("old_string", "")
-            new = e.get("new_string", "")
-            replace_all = bool(e.get("replace_all", False))
-            result = apply_edit(text, old, new, replace_all)
-            if result is None:
-                print("__RECON_FAIL__")
-                sys.exit(0)
-            text = result
-        print(text, end="")
-        sys.exit(0)
+    rel = gate_lib.gate_normalize_path(root, path)
+    if rel is None:
+        sys.exit(0)  # resolves outside the project root — not this gate's business
+    if not SURVEY_RE.match(rel):
+        sys.exit(0)  # not this gate's own file — not this gate's business
 
-    # Unrecognized tool name for this matcher — nothing to reconstruct.
-    print("__RECON_FAIL__")
-except Exception:
-    print("__RECON_FAIL__")
-' "$abs_path")"
+    current = None
+    if tool != "NotebookEdit":
+        abs_path = root + "/" + rel if rel else root
+        if os.path.isfile(abs_path):
+            try:
+                with open(abs_path, encoding="utf-8-sig") as fh:
+                    current = fh.read(1 << 20)
+            except OSError:
+                deny("%s exists but cannot be read; failing closed." % rel)
 
-if [ "$resulting_content" = "__RECON_FAIL__" ]; then
-  deny "product-one-pager: refused — cannot determine resulting content"
+    new_text, ok = gate_lib.gate_reconstruct_write(tool, ti, current)
+    if not ok:
+        deny(
+            "this write targets %s but the gate cannot determine the resulting content "
+            "from the tool input (tool=%r); cannot determine resulting content." % (rel, tool)
+        )
+
+    # --- facet check: JTBD 4-tuple (performer, circumstance, desired
+    # outcome) must be stated before any solution name appears. Tier 1:
+    # explicit label lines. Tier 2: section+adjacency (heading/bold-label
+    # naming the JTBD facet, with marker word co-occurring in a paragraph of
+    # that section). A bare substring match anywhere in the document no
+    # longer counts (issue #45 requirement #2).
+    text = new_text
+
+    HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)$')
+    BOLD_LABEL_RE = re.compile(r'^\*\*([^*]+)\*\*\s*:?\s*$')
+
+    def split_sections(t):
+        lines = t.split('\n')
+        sections = []
+        cur_heading = ''
+        cur_lines = []
+        for line in lines:
+            h = HEADING_RE.match(line)
+            b = BOLD_LABEL_RE.match(line)
+            if h or b:
+                sections.append((cur_heading, '\n'.join(cur_lines)))
+                cur_heading = (h.group(2) if h else b.group(1)).strip()
+                cur_lines = []
+            else:
+                cur_lines.append(line)
+        sections.append((cur_heading, '\n'.join(cur_lines)))
+        return sections
+
+    def paragraphs(body):
+        return re.split(r'\n\s*\n', body)
+
+    LABEL_RES = {
+        "performer": re.compile(r'^\s*(job\s*performer|performer)\s*:\s*\S', re.IGNORECASE | re.MULTILINE),
+        "circumstance": re.compile(r'^\s*circumstance\s*:\s*\S', re.IGNORECASE | re.MULTILINE),
+        "outcome": re.compile(r'^\s*(desired\s*outcome|outcome)\s*:\s*\S', re.IGNORECASE | re.MULTILINE),
+    }
+
+    def structure_match(t, label_res):
+        found = {}
+        lines = t.split('\n')
+        for idx, line in enumerate(lines):
+            for key, pat in label_res.items():
+                if key in found:
+                    continue
+                if pat.search(line):
+                    found[key] = idx
+        return found
+
+    SECTION_NAME_RE = re.compile(r'(?i)circumstance|job\s*performer|desired\s*outcome|jtbd')
+    MARKER_RES = {
+        "performer": re.compile(r'(?i)job\s*performer|performer'),
+        "circumstance": re.compile(r'(?i)circumstance'),
+        "outcome": re.compile(r'(?i)desired\s*outcome|outcome'),
+    }
+
+    def section_adjacency_match(t, section_name_re, marker_res):
+        found = {}
+        pos = 0
+        for heading, body in split_sections(t):
+            body_start = t.find(body, pos) if body else pos
+            if body_start == -1:
+                body_start = pos
+            if section_name_re.search(heading):
+                offset = body_start
+                for para in paragraphs(body):
+                    para_pos = t.find(para, offset)
+                    if para_pos == -1:
+                        para_pos = offset
+                    for key, pat in marker_res.items():
+                        if key in found:
+                            continue
+                        if pat.search(para):
+                            found[key] = para_pos
+                    offset = para_pos + len(para)
+            pos = body_start + len(body)
+        return found
+
+    line_starts = [0]
+    for line in text.split('\n'):
+        line_starts.append(line_starts[-1] + len(line) + 1)
+
+    tier1 = structure_match(text, LABEL_RES)
+    keys = {"performer", "circumstance", "outcome"}
+
+    if keys.issubset(tier1.keys()):
+        positions = {k: line_starts[tier1[k]] for k in keys}
+        tuple_complete_pos = max(positions.values())
+    else:
+        tier2 = section_adjacency_match(text, SECTION_NAME_RE, MARKER_RES)
+        merged = dict(tier1)
+        for k, v in tier2.items():
+            if k not in merged:
+                merged[k] = v if isinstance(v, int) else v
+        # positions from tier1 are line indices; from tier2 are char offsets.
+        # Normalize: convert tier1 line indices to char offsets too.
+        norm_positions = {}
+        for k in keys:
+            if k in tier1:
+                norm_positions[k] = line_starts[tier1[k]]
+            elif k in tier2:
+                norm_positions[k] = tier2[k]
+
+        missing = [k for k in ("performer", "circumstance", "outcome") if k not in norm_positions]
+        if missing:
+            label_map = {"performer": "job-performer", "circumstance": "circumstance", "outcome": "desired-outcome"}
+            deny(
+                "JTBD tuple element(s) missing: " + ",".join(label_map[m] for m in missing) +
+                ". Per docs/issue-36/..., the problem must be stated as a JTBD 4-tuple "
+                "(performer, job, circumstance, desired outcome) before any solution name appears."
+            )
+        tuple_complete_pos = max(norm_positions.values())
+
+    solution_markers = [
+        re.compile(r"^\s*solution\s*:", re.MULTILINE),
+        re.compile(r"we will build"),
+        re.compile(r"we are building"),
+        re.compile(r"제안\s*:"),
+        re.compile(r"우리는\s*[^\n]*?(만든다|만듭니다|구축한다|구축합니다)"),
+    ]
+
+    lowered = text.lower()
+    earliest_solution_pos = None
+    for pat in solution_markers:
+        m = pat.search(lowered)
+        if m:
+            if earliest_solution_pos is None or m.start() < earliest_solution_pos:
+                earliest_solution_pos = m.start()
+
+    if earliest_solution_pos is not None and earliest_solution_pos < tuple_complete_pos:
+        deny(
+            "a solution name appears before the JTBD tuple is stated. Per docs/issue-36/..., "
+            "the JTBD tuple (performer, job, circumstance, desired outcome) must be stated "
+            "before any solution name appears."
+        )
+
+    sys.exit(0)
+except SystemExit:
+    raise
+except Exception as _fc_e:
+    import json as _fc_json
+    payload = "product-one-pager: refused — fail-closed: internal error: %r" % (_fc_e,)
+    _fc_sys.stdout.write(
+        '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":%s}}\n'
+        % _fc_json.dumps(payload)
+    )
+    _fc_sys.exit(2)
+PY
+_fc_rc=$?
+if [ "$_fc_rc" -ne 0 ] && [ "$_fc_rc" -ne 2 ]; then
+  deny "product-one-pager: refused — fail-closed: internal error (judge exited $_fc_rc)"
 fi
-
-# --- facet check ------------------------------------------------------
-# Criterion (section 1): the problem must be stated as a JTBD 4-tuple
-# (performer, job, circumstance, desired outcome) BEFORE any solution
-# name appears.
-#
-# Heuristic (documented, not a formal parser): find the earliest
-# position at which ALL of the JTBD-tuple marker words are present in
-# the text (case-insensitive) — "performer" (or "job performer"),
-# "circumstance", "desired outcome" (or "outcome") — treating the tuple
-# as "stated" once all three marker classes have appeared at least
-# once. Compare that against the earliest position of a heuristic
-# solution-name marker: lines/phrases that announce a solution rather
-# than a problem, e.g. "Solution:", "We will build", "제안:", "우리는".
-# If a solution marker occurs strictly before the JTBD tuple is
-# complete (or the tuple never completes), deny.
-verdict="$(printf '%s' "$resulting_content" | python3 -c '
-import re, sys
-
-text = sys.stdin.read()
-lower = text.lower()
-
-# JTBD-tuple marker classes.
-performer_re = re.compile(r"job performer|performer")
-job_re = re.compile(r"\bjob\b")
-circumstance_re = re.compile(r"circumstance")
-outcome_re = re.compile(r"desired outcome|outcome")
-jtbd_label_re = re.compile(r"jtbd")
-
-def first(pat):
-    m = pat.search(lower)
-    return m.start() if m else None
-
-p_pos = first(performer_re)
-j_pos = first(job_re)
-c_pos = first(circumstance_re)
-o_pos = first(outcome_re)
-jtbd_pos = first(jtbd_label_re)
-
-missing = []
-if p_pos is None:
-    missing.append("job-performer")
-if c_pos is None:
-    missing.append("circumstance")
-if o_pos is None:
-    missing.append("desired-outcome")
-
-if missing:
-    print("DENY:missing:" + ",".join(missing))
-    sys.exit(0)
-
-tuple_positions = [x for x in [p_pos, c_pos, o_pos] if x is not None]
-tuple_complete_pos = max(tuple_positions)
-if jtbd_pos is not None:
-    tuple_complete_pos = min(tuple_complete_pos, jtbd_pos)
-
-# Heuristic solution-name markers: obvious solution-announcing phrases.
-solution_markers = [
-    re.compile(r"^\s*solution\s*:", re.MULTILINE),
-    re.compile(r"we will build"),
-    re.compile(r"we are building"),
-    re.compile(r"제안\s*:"),
-    re.compile(r"우리는\s*[^\n]*?(만든다|만듭니다|구축한다|구축합니다)"),
-]
-
-earliest_solution_pos = None
-for pat in solution_markers:
-    m = pat.search(lower if pat.flags & re.MULTILINE == 0 and False else text.lower())
-    if m:
-        if earliest_solution_pos is None or m.start() < earliest_solution_pos:
-            earliest_solution_pos = m.start()
-
-if earliest_solution_pos is not None and earliest_solution_pos < tuple_complete_pos:
-    print("DENY:solution-before-tuple")
-    sys.exit(0)
-
-print("OK")
-')"
-
-case "$verdict" in
-  OK)
-    exit 0
-    ;;
-  DENY:missing:*)
-    missing="${verdict#DENY:missing:}"
-    deny "product-one-pager: refused — JTBD tuple element(s) missing: ${missing}. Per docs/issue-36/..., the problem must be stated as a JTBD 4-tuple (performer, job, circumstance, desired outcome) before any solution name appears."
-    ;;
-  DENY:solution-before-tuple)
-    deny "product-one-pager: refused — a solution name appears before the JTBD tuple is stated. Per docs/issue-36/..., the JTBD tuple (performer, job, circumstance, desired outcome) must be stated before any solution name appears."
-    ;;
-  *)
-    deny "product-one-pager: refused — cannot evaluate JTBD facet"
-    ;;
-esac
+exit "$_fc_rc"

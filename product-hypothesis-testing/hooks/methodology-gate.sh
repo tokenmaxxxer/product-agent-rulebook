@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
+. "${CLAUDE_PLUGIN_ROOT_CORE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../core" && pwd -P)}/hooks/lib/gate-lib.sh"
+gate_trap_fail_closed
 # PreToolUse gate for product-hypothesis-testing: pre-registered hypothesis
 # discipline. Fires on the phase-1 PROPOSAL write
 # (docs/issue-<n>/proposals/*product-discovery*.md) and the phase-2 RECORD
 # (docs/issue-<n>/reports/product-discovery.md). Fails closed.
+#
+# Migrated to the gate-house standard (core issue #72): kill switch now uses
+# gate_kill_switch_active's fixed on-spelling set (1/true/yes/on) instead of
+# an exact-match "= 1" check that fail-opened on any unrecognized value.
+# Also adopts gate_parse_json_or_deny / gate_normalize_path /
+# gate_reconstruct_write from core's gate-lib.py, and adds Bash-tool write
+# coverage via gate_bash_write_targets.
 set -uo pipefail
-
-if [ "${PRODUCT_HYPOTHESIS_TESTING_GATE_OFF:-}" = "1" ]; then
-  cat >/dev/null 2>&1 || true
-  exit 0
-fi
+gate_kill_switch_active "${PRODUCT_HYPOTHESIS_TESTING_GATE_OFF:-}" || { cat >/dev/null 2>&1 || true; trap - EXIT; exit 0; }
 
 deny() {
   printf '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
@@ -22,6 +27,26 @@ command -v python3 >/dev/null 2>&1 || deny "product-hypothesis-testing: refused 
 
 payload="$(cat)"
 [ -n "$payload" ] || deny "product-hypothesis-testing: refused — empty stdin payload."
+
+# Bash-tool write coverage: scan tool_input.command tokens for a match
+# against the proposal/record path patterns before the python payload runs.
+bash_cmd="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+    if isinstance(d, dict) and d.get("tool_name") == "Bash":
+        ti = d.get("tool_input")
+        if isinstance(ti, dict) and isinstance(ti.get("command"), str):
+            print(ti["command"])
+except Exception:
+    pass' 2>/dev/null)"
+if [ -n "$bash_cmd" ]; then
+  for tok in $(printf '%s\n' "$bash_cmd" | grep -oE '[[:alnum:]_./~$-]+' || true); do
+    if printf '%s' "$tok" | grep -qE 'docs/issue-[0-9]+/proposals/[^/]*product-discovery[^/]*\.md$' \
+      || printf '%s' "$tok" | grep -qE 'docs/issue-[0-9]+/reports/product-discovery\.md$'; then
+      deny "product-hypothesis-testing: refused — Bash command targets the proposal/record path; failing closed."
+    fi
+  done
+fi
 
 # Resolve project root: CLAUDE_PROJECT_DIR (validated) -> git toplevel -> cwd.
 root=""
@@ -47,38 +72,39 @@ fi
 pyscript="$(mktemp)"
 trap 'rm -f "$pyscript"' EXIT
 cat > "$pyscript" <<'PYEOF'
-import json, os, re, sys
+import importlib.util, os, re, sys
+
+_spec = importlib.util.spec_from_file_location("gate_lib", os.environ["GATE_LIB_PY"])
+gate_lib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gate_lib)
 
 root = sys.argv[1]
+raw = sys.stdin.read()
 
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    print("DENY|product-hypothesis-testing: refused — could not parse the tool-call JSON on stdin.")
+
+def deny(msg):
+    print("DENY|product-hypothesis-testing: refused — " + msg)
     sys.exit(0)
 
-if not isinstance(payload, dict):
-    print("DENY|product-hypothesis-testing: refused — malformed tool-call payload.")
-    sys.exit(0)
+
+payload = gate_lib.gate_parse_json_or_deny(raw, deny)
 
 tool_name = payload.get("tool_name", "")
 tool_input = payload.get("tool_input", None)
 if not isinstance(tool_input, dict):
-    print("DENY|product-hypothesis-testing: refused — malformed or missing tool_input.")
-    sys.exit(0)
+    deny("malformed or missing tool_input.")
 
 file_path = tool_input.get("file_path", "")
+if not file_path and tool_name == "NotebookEdit":
+    file_path = tool_input.get("notebook_path", "")
 if not file_path:
     print("ALLOW")
     sys.exit(0)
 
-# Resolve absolute path against root for matching relative-to-root regexes.
-abs_path = file_path if os.path.isabs(file_path) else os.path.join(root, file_path)
-try:
-    rel_path = os.path.relpath(abs_path, root)
-except Exception:
-    rel_path = file_path
-rel_path = rel_path.replace(os.sep, "/")
+rel_path = gate_lib.gate_normalize_path(root, file_path)
+if rel_path is None:
+    print("ALLOW")
+    sys.exit(0)
 
 proposal_re = re.compile(r'^docs/issue-(\d+)/proposals/[^/]*product-discovery[^/]*\.md$')
 record_re = re.compile(r'^docs/issue-(\d+)/reports/product-discovery\.md$')
@@ -90,7 +116,7 @@ if not m_proposal and not m_record:
     print("ALLOW")
     sys.exit(0)
 
-# Reconstruct resulting text for Write / Edit / MultiEdit.
+
 def read_current(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -98,66 +124,50 @@ def read_current(path):
     except Exception:
         return None
 
-resulting_text = None
-if tool_name == "Write":
-    content = tool_input.get("content", None)
-    if isinstance(content, str):
-        resulting_text = content
-elif tool_name == "Edit":
-    old_string = tool_input.get("old_string", None)
-    new_string = tool_input.get("new_string", None)
-    replace_all = tool_input.get("replace_all", False)
-    current = read_current(abs_path)
-    if current is None:
-        # File may not exist yet; if old_string is empty, treat as create.
-        if old_string == "":
-            current = ""
-        else:
-            current = None
-    if current is not None and isinstance(old_string, str) and isinstance(new_string, str):
-        if old_string == "":
-            resulting_text = current + new_string
-        elif old_string in current:
-            if replace_all:
-                resulting_text = current.replace(old_string, new_string)
-            else:
-                resulting_text = current.replace(old_string, new_string, 1)
-elif tool_name == "MultiEdit":
-    edits = tool_input.get("edits", None)
-    current = read_current(abs_path)
-    if current is None:
-        current = ""
-    if isinstance(edits, list):
-        ok = True
-        text = current
-        for e in edits:
-            if not isinstance(e, dict):
-                ok = False
-                break
-            old_string = e.get("old_string", None)
-            new_string = e.get("new_string", None)
-            replace_all = e.get("replace_all", False)
-            if not isinstance(old_string, str) or not isinstance(new_string, str):
-                ok = False
-                break
-            if old_string == "":
-                text = text + new_string
-            elif old_string in text:
-                if replace_all:
-                    text = text.replace(old_string, new_string)
-                else:
-                    text = text.replace(old_string, new_string, 1)
-            else:
-                ok = False
-                break
-        if ok:
-            resulting_text = text
 
-if resulting_text is None:
-    print("DENY|product-hypothesis-testing: refused — cannot determine resulting content for this write.")
-    sys.exit(0)
+abs_path = file_path if os.path.isabs(file_path) else os.path.join(root, file_path)
+current = read_current(abs_path)
+if tool_name == "Write":
+    resulting_text, ok = gate_lib.gate_reconstruct_write(tool_name, tool_input, current)
+elif tool_name in ("Edit", "MultiEdit"):
+    if current is None and tool_name == "Edit" and tool_input.get("old_string", None) == "":
+        current = ""
+    resulting_text, ok = gate_lib.gate_reconstruct_write(tool_name, tool_input, current)
+elif tool_name == "NotebookEdit":
+    resulting_text, ok = gate_lib.gate_reconstruct_write(tool_name, tool_input, current)
+else:
+    resulting_text, ok = None, False
+
+if not ok or resulting_text is None:
+    deny("cannot determine resulting content for this write.")
 
 text = resulting_text
+
+HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)$')
+BOLD_LABEL_RE = re.compile(r'^\*\*([^*]+)\*\*\s*:?\s*$')
+
+
+def split_sections(t):
+    lines = t.split('\n')
+    sections = []
+    cur_heading = ''
+    cur_lines = []
+    for line in lines:
+        h = HEADING_RE.match(line)
+        b = BOLD_LABEL_RE.match(line)
+        if h or b:
+            sections.append((cur_heading, '\n'.join(cur_lines)))
+            cur_heading = (h.group(2) if h else b.group(1)).strip()
+            cur_lines = []
+        else:
+            cur_lines.append(line)
+    sections.append((cur_heading, '\n'.join(cur_lines)))
+    return sections
+
+
+def paragraphs(body):
+    return re.split(r'\n\s*\n', body)
+
 
 def has_itwws(t):
     if re.search(r'ITWWS', t, re.IGNORECASE):
@@ -168,16 +178,26 @@ def has_itwws(t):
         return True
     return False
 
+
 def has_decision_rule(t):
-    if re.search(r'\b(go|kill|pivot)\b', t, re.IGNORECASE):
-        return True
+    # Explicit labeled line, e.g. "Decision rule: go if ..."
+    for line in t.split('\n'):
+        if re.match(r'^\s*(decision[\s-]?rule)\s*:\s*\S.*\b(go|kill|pivot)\b', line, re.IGNORECASE):
+            return True
     if re.search(r'진행|중단|피벗', t):
         return True
+    # Section/paragraph anchored: a decision-shaped heading whose paragraph
+    # both mentions go/kill/pivot AND a threshold/metric word.
+    for heading, body in split_sections(t):
+        if re.search(r'(?i)decision|verdict|rule|hypothesis', heading):
+            for para in paragraphs(body):
+                if re.search(r'\b(go|kill|pivot)\b', para, re.IGNORECASE) and \
+                   re.search(r'threshold|metric|기준', para, re.IGNORECASE):
+                    return True
     return False
 
+
 def has_threshold_digit(t):
-    # A digit appearing near a metric/threshold word, or a number followed
-    # by % or a comparison word.
     if re.search(r'\d+\s*%', t):
         return True
     if re.search(r'\d+[^\n]{0,40}(threshold|metric|crosses|넘으면|이상|이하)', t, re.IGNORECASE):
@@ -186,12 +206,12 @@ def has_threshold_digit(t):
         return True
     return False
 
+
 if m_proposal:
     issue_no = m_proposal.group(1)
     current_state = os.path.join(root, "docs", "issue-%s" % issue_no, "reports", "product-discovery", "current-state.md")
     if not os.path.isfile(current_state):
-        print("DENY|product-hypothesis-testing: refused — proposal write precedes its own current-state survey")
-        sys.exit(0)
+        deny("proposal write precedes its own current-state survey")
 
     missing = []
     if not has_threshold_digit(text):
@@ -202,14 +222,12 @@ if m_proposal:
         missing.append("itwws")
 
     if missing:
-        print("DENY|product-hypothesis-testing: refused — proposal missing required element(s): %s" % ", ".join(missing))
-        sys.exit(0)
+        deny("proposal missing required element(s): %s" % ", ".join(missing))
 
     print("ALLOW")
     sys.exit(0)
 
 if m_record:
-    # Verdict-adjacency: a number and a threshold-word within a 3-line window.
     lines = text.split("\n")
     adjacency_ok = False
     for i in range(len(lines)):
@@ -218,17 +236,14 @@ if m_record:
             adjacency_ok = True
             break
     if not adjacency_ok:
-        print("DENY|product-hypothesis-testing: refused — record does not state the measured value adjacent to its threshold.")
-        sys.exit(0)
+        deny("record does not state the measured value adjacent to its threshold.")
 
     if not has_itwws(text):
-        print("DENY|product-hypothesis-testing: refused — ITWWS follow-up is missing, or deferred with no stated reason.")
-        sys.exit(0)
+        deny("ITWWS follow-up is missing, or deferred with no stated reason.")
 
     actioned = re.search(r'actioned|진행함', text, re.IGNORECASE)
     deferred_ok = False
     for m in re.finditer(r'deferred', text, re.IGNORECASE):
-        # Look at the sentence/line containing "deferred".
         start = text.rfind("\n", 0, m.start()) + 1
         end_candidates = [text.find(c, m.end()) for c in [".", "\n"] if text.find(c, m.end()) != -1]
         end = min(end_candidates) if end_candidates else len(text)
@@ -239,8 +254,7 @@ if m_record:
             break
 
     if not actioned and not deferred_ok:
-        print("DENY|product-hypothesis-testing: refused — ITWWS follow-up is missing, or deferred with no stated reason.")
-        sys.exit(0)
+        deny("ITWWS follow-up is missing, or deferred with no stated reason.")
 
     print("ALLOW")
     sys.exit(0)
