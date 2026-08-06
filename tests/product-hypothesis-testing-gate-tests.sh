@@ -222,5 +222,42 @@ run_raw deny missing-core-denies \
   "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":%s}}' "$PROPOSAL" "$(jesc "$FULL")")" \
   CLAUDE_PLUGIN_ROOT_CORE=/no-such-core
 
+# Regression: the gate must not depend on `mktemp` at all. A prior version
+# wrote its inline python payload to a `mktemp`-created scratch file before
+# running it; under a Claude Code sandboxed role session, a template-less
+# `mktemp` resolved to a directory outside the sandbox's writable set (on
+# macOS, the platform's confstr tmp dir rather than $TMPDIR), so the gate's
+# own scratch write was silently denied and it failed closed on every
+# proposal/record write regardless of content (reasona issue-3, 2026-08-06).
+# Shadow `mktemp` with a binary that always fails and touches a marker, but
+# ONLY for the gate subprocess itself — the harness's own `td="$(mktemp -d)"`
+# calls (used to build each test's throwaway repo) must keep using the real
+# one, or the harness breaks along with the thing it's testing.
+mktemp_shadow_dir="$(mktemp -d)"
+mktemp_marker="$mktemp_shadow_dir/mktemp-was-called"
+cat > "$mktemp_shadow_dir/mktemp" <<EOF
+#!/bin/sh
+touch "$mktemp_marker"
+echo "mktemp: mkstemp failed: Operation not permitted (simulated sandbox denial)" >&2
+exit 1
+EOF
+chmod +x "$mktemp_shadow_dir/mktemp"
+
+td="$(cd "$(mktemp -d)" && pwd -P)"; git init -q "$td"
+mkdir -p "$td/$(dirname "$PROPOSAL")" "$td/$(dirname "$CURRENT_STATE")"
+printf 'current state survey\n' > "$td/$CURRENT_STATE"
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":%s},"cwd":"%s"}' \
+  "$PROPOSAL" "$(jesc "$FULL")" "$td" \
+  | env CLAUDE_PROJECT_DIR="$td" PATH="$mktemp_shadow_dir:$PATH" \
+    /bin/bash "$HOOKS/methodology-gate.sh" >/dev/null 2>&1
+rc=$?; case "$rc" in 0) got=allow ;; 2) got=deny ;; *) got="exit-$rc" ;; esac
+report allow "$got" no-mktemp-dependency-regression
+if [ -e "$mktemp_marker" ]; then
+  fail=$((fail+1)); printf 'FAIL   %-38s the gate still calls mktemp\n' no-mktemp-marker-absent
+else
+  pass=$((pass+1)); printf 'ok     %-38s marker-absent\n' no-mktemp-marker-absent
+fi
+rm -rf "$td" "$mktemp_shadow_dir"
+
 printf '\n== %d passed, %d failed ==\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

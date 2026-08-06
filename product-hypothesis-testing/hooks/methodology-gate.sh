@@ -12,6 +12,18 @@ gate_trap_fail_closed
 # Also adopts gate_parse_json_or_deny / gate_normalize_path /
 # gate_reconstruct_write from core's gate-lib.py, and adds Bash-tool write
 # coverage via gate_bash_write_targets.
+#
+# Fixed a template-less `mktemp` that wrote its inline python payload to a
+# scratch file before running it: under a Claude Code sandboxed role session,
+# a bare `mktemp` resolved to the platform tmp dir (on macOS, the confstr
+# _CS_DARWIN_USER_TEMP_DIR path under /var/folders/.../T) rather than the
+# sandbox's own writable $TMPDIR, so the gate's own scratch write was denied
+# and it failed closed on every proposal/record write in that plugin,
+# regardless of content (found via reasona issue-3, 2026-08-06). No file is
+# needed at all — the payload and root now travel via env vars into a
+# `python3 <<'PYEOF' … PYEOF` heredoc piped straight to python3's stdin, the
+# same pattern the sibling gates (product-one-pager, product-guardrail-
+# metrics, product-opportunity-solution-tree) already use.
 set -uo pipefail
 gate_kill_switch_active "${PRODUCT_HYPOTHESIS_TESTING_GATE_OFF:-}" || { cat >/dev/null 2>&1 || true; trap - EXIT; exit 0; }
 
@@ -69,17 +81,15 @@ if [ -z "$root" ]; then
 fi
 [ -n "$root" ] || root="$(pwd -P)"
 
-pyscript="$(mktemp)"
-trap 'rm -f "$pyscript"' EXIT
-cat > "$pyscript" <<'PYEOF'
+result="$(MHT_ROOT="$root" MHT_PAYLOAD="$payload" GATE_LIB_PY="$GATE_LIB_PY" python3 <<'PYEOF'
 import importlib.util, os, re, sys
 
 _spec = importlib.util.spec_from_file_location("gate_lib", os.environ["GATE_LIB_PY"])
 gate_lib = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate_lib)
 
-root = sys.argv[1]
-raw = sys.stdin.read()
+root = os.environ["MHT_ROOT"]
+raw = os.environ["MHT_PAYLOAD"]
 
 
 def deny(msg):
@@ -263,10 +273,7 @@ if m_record:
 
 print("ALLOW")
 PYEOF
-
-result="$(printf '%s' "$payload" | python3 "$pyscript" "$root")"
-rm -f "$pyscript"
-trap - EXIT
+)"
 
 status="${result%%|*}"
 if [ "$status" = "DENY" ]; then
