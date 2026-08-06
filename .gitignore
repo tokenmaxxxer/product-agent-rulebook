@@ -1,5 +1,6 @@
 .DS_Store
 .idea/
+.worktrees/
 
 # product-cycle role state file is runtime state, not a design artifact —
 # never tracked in this plugin repository.
