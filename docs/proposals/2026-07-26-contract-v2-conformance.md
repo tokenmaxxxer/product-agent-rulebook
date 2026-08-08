@@ -1,5 +1,5 @@
 ---
-status: approved
+status: landed
 ---
 
 # Bring product's rulebook into conformance with the v2 blackboard/event contract
