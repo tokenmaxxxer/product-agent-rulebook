@@ -1,5 +1,5 @@
 ---
-status: superseded
+status: landed
 files:
   - product-agent-rulebook/README.md
   - product-agent-rulebook/.gitignore
