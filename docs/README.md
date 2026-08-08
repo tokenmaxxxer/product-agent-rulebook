@@ -9,13 +9,16 @@ following the same doctrine `coding-agent-rulebook` uses:
 - `specs/` — the authoritative, evolving specification of how this
   repository's plugin works, in particular `specs/state-machine.md`.
 - `proposals/` — this repository's own change proposals (its `warrant`-style
-  units of work), and the specification files that carry `product-cycle`'s
+  units of work), and the specification files that carry the product role's
   hypothesis state — the two share this directory by convention: a proposal
   frontmatter carries `status: proposed -> approved -> landed` for the work
-  itself, while a specification file carries `status: idle -> ... ->
-  decided` for a product hypothesis. `state-gate.sh` distinguishes them
-  only by content (a proposal file has no `metric`/`threshold`/
-  `decision_rule` fields), never by filename convention.
+  itself, while a specification file carries `status: idle -> scoping ->
+  researching -> hypothesis-registered -> measuring -> validated /
+  invalidated / inconclusive` for a product hypothesis (matching
+  `product-discovery.spec.json`'s `loop_state` set for its terminal
+  states). `state-gate.sh` distinguishes them only by content (a proposal
+  file has no `hypothesis_statement`/`metric`/`threshold`/`decision_rule`
+  fields), never by filename convention.
 - `_assets/` — attachments (images, diagrams) referenced by documents above.
 
 Each bucket that would otherwise be empty carries a placeholder so it is

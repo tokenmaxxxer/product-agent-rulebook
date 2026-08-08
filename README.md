@@ -28,7 +28,12 @@ Five independent plugins, each owning one methodology facet and its own
                                         problem stated as a job-performer/
                                         job/circumstance/desired-outcome
                                         4-tuple, fixed before any solution
-                                        name appears. Ships skills:
+                                        name appears. Also owns
+                                        target_market,
+                                        market_size_rationale,
+                                        competitive_alternatives,
+                                        differentiator, timing_rationale,
+                                        go_to_market_plan. Ships skills:
                                         one-pager.
     product-opportunity-solution-tree/ Places the current-state survey (and
                                         later the record) on the relevant
@@ -46,24 +51,31 @@ Five independent plugins, each owning one methodology facet and its own
                                         across compared candidates on the
                                         proposal, falling back to a flagged
                                         ICE score only when reach data is
-                                        genuinely unavailable. Ships skills:
+                                        genuinely unavailable. Owns
+                                        evidence_log. Ships skills:
                                         assumption-mapping.
-    product-hypothesis-testing/        Pre-registers a named metric, a
-                                        numeric threshold, and a go/kill/
-                                        pivot decision rule on the proposal
-                                        before data collection; pre-commits
-                                        an ITWWS follow-up; applies the
+    product-hypothesis-testing/        Pre-registers a falsifiable
+                                        hypothesis_statement, a named
+                                        metric, a numeric threshold, a
+                                        decision_rule, a fail_condition,
+                                        and a time_box on the proposal
+                                        before data collection; optionally
+                                        a confidence_level; pre-commits an
+                                        ITWWS follow-up; applies the
                                         registered rule mechanically at
-                                        record time (measured value adjacent
-                                        to its threshold, ITWWS actioned or
-                                        explicitly deferred with a reason).
-                                        Ships skills: hypothesis-testing.
+                                        record time to reach a
+                                        recommendation (go/no-go) and a
+                                        verdict (validated/invalidated/
+                                        inconclusive), also owning
+                                        success_metric. Ships skills:
+                                        hypothesis-testing.
     product-guardrail-metrics/         Guardrail metrics named non-empty at
                                         the same moment a hypothesis is
                                         registered (proposal), and their
                                         status stated explicitly at
                                         measurement time (record) — silence
-                                        is never "assumed fine". Ships
+                                        is never "assumed fine". Owns
+                                        critical_success_factors. Ships
                                         skills: guardrail-metrics.
     tests/                             repo-level checks (never installed)
 
@@ -99,12 +111,47 @@ active:
 
 ## Record vocabulary
 
-`loop_state`: `idle, scoping, researching, hypothesis-registered,
-measuring, decided` plus `scope-proposed` when this is the subject's
-front record (terminal: `decided` / `scope-proposed`). `scope-approved`
+`loop_state` matches `product-discovery.spec.json` exactly:
+`measuring` (progress); `hypothesis-not-falsifiable`,
+`evidence-log-unreadable` (refusal/error); `validated`, `invalidated`,
+`inconclusive` (terminal) — plus `scope-proposed` when this is the
+subject's front record (also terminal for that record). `scope-approved`
 is the human-only accept state the external pre-approval gate raises a
 `scope-proposed` record to — never written by this role, never part of
-this vocabulary.
+this vocabulary. The prior `idle, scoping, researching,
+hypothesis-registered, decided` names remain in prose inside the skill
+files as conversational-phase narration (they describe the state-machine
+phase, per `docs/specs/state-machine.md`) but are no longer written as
+`loop_state` record values — no committed record in this repository's
+history has ever used them as record tokens.
+
+## Spec field ownership
+
+`product-discovery.spec.json`'s required deliverable fields, each mapped
+to the plugin/skill that owns it:
+
+| Spec field | Owning plugin |
+| --- | --- |
+| `problem_statement` | `product-one-pager` (Problem Statement) |
+| `target_market` | `product-one-pager` |
+| `market_size_rationale` | `product-one-pager` |
+| `competitive_alternatives` | `product-one-pager` |
+| `differentiator` | `product-one-pager` |
+| `timing_rationale` | `product-one-pager` |
+| `go_to_market_plan` | `product-one-pager` |
+| `success_metric` | `product-hypothesis-testing` (`metric`, renamed in prose) |
+| `critical_success_factors` | `product-guardrail-metrics` (guardrail list) |
+| `recommendation` | `product-hypothesis-testing` (go/no-go call) |
+| `hypothesis_statement` | `product-hypothesis-testing` |
+| `fail_condition` | `product-hypothesis-testing` |
+| `time_box` | `product-hypothesis-testing` |
+| `decision_rule` | `product-hypothesis-testing` |
+| `confidence_level` (optional) | `product-hypothesis-testing` |
+| `evidence_log` | `product-assumption-mapping` |
+| `verdict` | `product-hypothesis-testing` (`validated`/`invalidated`/`inconclusive`) |
+
+`product-opportunity-solution-tree` owns no spec field 1:1 — its OST
+artifact is cross-cutting context, not a per-hypothesis record field.
 
 ## Install
 

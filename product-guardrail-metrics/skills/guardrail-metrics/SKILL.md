@@ -26,6 +26,12 @@ outright, regardless of the primary-metric result.
 
 **What it produces:** a non-empty guardrail-metrics list, each entry
 naming the metric and the direction/threshold that counts as a breach.
+This list *is* this rulebook's `critical_success_factors`
+(`product-discovery.spec.json`'s field for "what must hold, or the result
+doesn't count"): a guardrail named non-empty at hypothesis-registration
+time and checked at measurement time is exactly a critical success
+factor stated in the vocabulary this plugin already uses — no separate
+field or artifact is needed to satisfy `critical_success_factors`.
 
 **Where it is written:** the same spec/state artifact's guardrail-metrics
 field — write it alongside `metric`, `threshold`, and `decision_rule` in

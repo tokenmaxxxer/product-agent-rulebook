@@ -52,6 +52,19 @@ write, not the state file. Never gated by `state-gate.sh`.
 - Assumption-test type chosen, if in the priority quadrant (prototype
   test / one-question survey / data mining / engineering spike)
 
+## `evidence_log`
+
+Every one-line evidence citation this skill already writes (interview/
+observation count, date, paraphrase) *is* `product-discovery.spec.json`'s
+`evidence_log` field — no separate log or artifact is needed. Each
+citation resolves to a concrete source: a file path, a commit sha, or a
+named interview record — never a bare claim with nothing behind it. This
+repository already follows a `reference_resolution` rule as an unwritten
+convention (no orphan references: a citation that cannot be traced to a
+path/sha/source is not written into the assumption map); this section
+makes that rule explicit so `evidence_log` and reference resolution are
+documented, not just practiced.
+
 ## Standing directive: the Mom Test
 
 Any time this skill (or the agent generally, while in `researching`) is
